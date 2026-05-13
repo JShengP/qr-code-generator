@@ -16,7 +16,7 @@ from . import config
 from .auth import get_current_user
 from .database import get_db
 from .limiter import limiter
-from .models import ScanEvent, UrlMapping, User
+from .models import AuditLog, ScanEvent, UrlMapping, User
 from .schemas import (
     CreateRequest,
     CreateResponse,
@@ -206,6 +206,8 @@ def create_qr(
         expires_at=expires_at,
     )
     db.add(mapping)
+    db.flush()  # populates mapping.id for the audit log FK
+    _log_audit(db, mapping, user, request, "create", after=normalized_url)
     db.commit()
 
     short_url = f"{BASE_URL}/r/{token}"
@@ -326,14 +328,25 @@ def update_qr(
 
     if req.url is not None:
         try:
-            mapping.original_url = validate_url(req.url)
+            new_url = validate_url(req.url)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
+        _log_audit(
+            db, mapping, user, request, "patch_url",
+            before=mapping.original_url, after=new_url,
+        )
+        mapping.original_url = new_url
         # Invalidate cache
         redirect_cache.pop(token, None)
 
     if req.expires_at is not None:
-        mapping.expires_at = _to_naive_utc(req.expires_at)
+        new_expires = _to_naive_utc(req.expires_at)
+        _log_audit(
+            db, mapping, user, request, "patch_expires",
+            before=(mapping.expires_at.isoformat() if mapping.expires_at else None),
+            after=(new_expires.isoformat() if new_expires else None),
+        )
+        mapping.expires_at = new_expires
         # Invalidate cache
         redirect_cache.pop(token, None)
 
@@ -364,6 +377,11 @@ def rotate_edit_token_route(
 
     new_plain, new_hash = generate_edit_token()
     mapping.edit_token_hash = new_hash
+    _log_audit(
+        db, mapping, user, request, "rotate_edit_token",
+        # No values logged — recording the hashes (old or new) would
+        # defeat the point of hashing them in the first place.
+    )
     db.commit()
     # `updated_at` auto-bumps via the SQLAlchemy onupdate trigger.
     return RotateEditTokenResponse(edit_token=new_plain)
@@ -380,6 +398,7 @@ def delete_qr(
 ):
     mapping = _get_mapping_or_404(token, db)
     _require_edit_authorization(mapping, authorization, user)
+    _log_audit(db, mapping, user, request, "delete")
     mapping.is_deleted = True
     db.commit()
     # Invalidate cache
@@ -431,6 +450,36 @@ def _get_mapping_or_404(token: str, db: Session) -> UrlMapping:
     if mapping is None or mapping.is_deleted:
         raise HTTPException(status_code=404, detail="Not Found")
     return mapping
+
+
+def _log_audit(
+    db: Session,
+    mapping: UrlMapping,
+    user: User | None,
+    request: Request,
+    action: str,
+    before: str | None = None,
+    after: str | None = None,
+) -> None:
+    """Record one mutation on a UrlMapping. Caller is responsible for
+    the surrounding db.commit() — we want the audit row to land in the
+    same transaction as the mutation it describes, so a half-applied
+    change can't end up unaudited.
+
+    `user` is the currently-signed-in user (None when only a bearer
+    token was used). `before`/`after` are loose strings; format
+    depends on the action.
+    """
+    db.add(
+        AuditLog(
+            mapping_id=mapping.id,
+            user_id=user.id if user is not None else None,
+            action=action,
+            before_value=before,
+            after_value=after,
+            ip_address=request.client.host if request.client else None,
+        )
+    )
 
 
 def _require_edit_authorization(

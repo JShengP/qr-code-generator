@@ -97,6 +97,44 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
 
 
+class AuditLog(Base):
+    """A row per mutating action on a UrlMapping.
+
+    Captures every create / patch_url / patch_expires / delete /
+    rotate_edit_token so the system has a forensic trail and an
+    "undo from history" path even though the live row only carries
+    the current state. Soft-deleted mappings keep their audit history
+    indefinitely.
+
+    `before_value` / `after_value` are loose strings so the same
+    schema covers URL strings, ISO datetimes, and "rotated" sentinels
+    without a polymorphic column.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mapping_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("url_mappings.id"), nullable=False, index=True
+    )
+    # Nullable because a future bearer-only action (no session, no
+    # user_id resolvable from cookie) still gets logged with whatever
+    # we know — but `bearer` ownership is acted on the mapping's
+    # owner_id, which we can also resolve and stash here. For now
+    # we just log `user_id = current session's user.id if any`.
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True
+    )
+    # One of: "create", "patch_url", "patch_expires", "delete",
+    # "rotate_edit_token". Kept as a free-text column on purpose so
+    # adding new action types doesn't need a migration.
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    before_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
+
+
 class MagicLink(Base):
     """A pending login. Created when someone hits /api/auth/request-link;
     consumed when they click the emailed link. Single-use: once
