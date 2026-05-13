@@ -237,3 +237,47 @@ Commit (this one). The security agent's review identified the URL validator as t
 - IDN / punycode homograph: `https://xn--vil-7ka.com` (visually "еvil.com") still passes. Needs IDNA decoding before blocklist comparison.
 - DNS rebinding: a public name that resolves to `127.0.0.1` only at fetch time bypasses `is_internal_ip`. Defense is at the HTTP-client layer, not the URL validator.
 - The `BLOCKED_DOMAINS` set is hardcoded and tiny. Production wants a sourced feed (Google Safe Browsing API, PhishTank).
+
+## Post-review #3 — feat(auth): edit_token bearer on PATCH/DELETE
+
+The security review's headline finding: PATCH and DELETE accepted any caller who knew the (publicly-printed) token. Anyone who scanned a QR could PATCH it to point at a phishing site or DELETE it. This commit closes the gap.
+
+**Shape:**
+
+- `POST /api/qr/create` returns `edit_token: str` — 32 bytes from `secrets.token_urlsafe`, ~256 bits of entropy.
+- The DB stores only `sha256_hex(edit_token)` in a new `edit_token_hash` column on `url_mappings`.
+- `PATCH /api/qr/{token}` and `DELETE /api/qr/{token}` require `Authorization: Bearer <edit_token>`. The handler hashes the presented value and `hmac.compare_digest`s it against the column.
+- `GET /api/qr/{token}` (the info endpoint) returns the row's public fields but NOT the hash, and certainly not the plaintext.
+
+**Why these specific choices:**
+
+- **SHA-256 of a high-entropy plaintext, not bcrypt/argon2.** Password hashing functions (`bcrypt`, `argon2`) deliberately consume CPU to slow down brute-force against low-entropy user-chosen passwords. Our `edit_token` has ~256 bits of CSPRNG entropy from the start — brute-forcing it is computationally infeasible regardless of hash speed. SHA-256 is the right tool: it's fast (don't tax legit PATCH/DELETE requests), it's collision-resistant for our purposes, and the constant-time `hmac.compare_digest` removes timing-side-channel leakage.
+- **Token returned exactly once, on create.** Not stored in plaintext server-side, not retrievable via any read endpoint. If the caller loses it, the short link is no longer editable — this matches the principle of least disclosure (we shouldn't be a custodian of the editing credential).
+- **`Authorization: Bearer ...` header rather than a query parameter or body field.** Headers don't end up in access logs, `Referer`s, or browser history. The mistake of putting auth tokens in URLs has burned too many systems.
+- **`edit_token_hash` nullable.** Lets rows created before this column existed (none yet, but a forward-compat consideration) coexist; they're treated as un-editable, which is the safe default.
+
+**Trade-offs:**
+
+- Adds one column to the schema and ~30 lines to `routes.py`. Test suite grew by 8 cases (PATCH/DELETE auth coverage).
+- The UI now displays the `edit_token` on the result page with a "save this!" warning. UX of "you have one shot to save it" is awkward but matches every well-designed API key issuance flow (Stripe, GitHub PAT v2, AWS IAM).
+- Smoke script needed updating to pass the `Authorization` header on PATCH and DELETE.
+- Does NOT yet solve CSRF (the API is still cookie-less and bearer-auth is immune to traditional CSRF), but a future move to cookie-based session auth would need a CSRF token alongside.
+
+**Test coverage:**
+
+- `test_create_response_includes_edit_token`
+- `test_get_info_does_not_leak_edit_token` (locks the "info endpoint must not return the credential" property)
+- `test_patch_without_auth_returns_401`
+- `test_patch_with_wrong_token_returns_401`
+- `test_patch_with_malformed_auth_header_returns_401` (Authorization without `Bearer ` prefix)
+- `test_delete_without_auth_returns_401`
+- `test_delete_with_wrong_token_returns_401_and_link_still_works` (locks: failed auth must not partially mutate state)
+- `test_edit_tokens_isolated_between_tokens` (holder of token A can't PATCH token B)
+
+48/48 tests now pass (was 40).
+
+**Known limitations / follow-ups:**
+
+- No way to rotate or revoke an `edit_token` after issue. A revocation would require either re-keying via a new `POST /api/qr/{token}/rotate` (still needs the old token), or admin override (out of scope for a no-auth-system prototype).
+- Brute-forcing the bearer is still possible in principle; the rate limit only covers `POST /api/qr/create`. Adding a limit to `PATCH`/`DELETE` (e.g. `30/minute/IP`) would close this — flagged in the next review pass.
+- The validator review also recommended IDN/punycode decoding for blocklist matching; that's deferred (more invasive than this auth commit).

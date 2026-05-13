@@ -67,8 +67,11 @@ Write-Host ''
 $create = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/qr/create" `
     -ContentType 'application/json' -Body '{"url": "https://example.com"}'
 $token = $create.token
+$editToken = $create.edit_token
+$authHeaders = @{ 'Authorization' = "Bearer $editToken" }
 Assert-Eq '1. POST create returns 7-char token' $token.Length 7
 Assert-Eq '   short_url ends with token' $create.short_url.EndsWith("/r/$token") $true
+Assert-Eq '   create response includes edit_token' ($editToken.Length -ge 32) $true
 
 # ----- 2. GET /r/{token} -> 302 --------------------------------------------
 $r2 = Get-StatusAndLocation "$BaseUrl/r/$token"
@@ -79,17 +82,19 @@ Assert-Eq '   Location header = original URL' $r2.Location 'https://example.com'
 $info = Invoke-RestMethod -Uri "$BaseUrl/api/qr/$token"
 Assert-Eq '3. GET info returns matching token' $info.token $token
 
-# ----- 4. PATCH url ---------------------------------------------------------
+# ----- 4. PATCH url (requires edit_token) -----------------------------------
 $patched = Invoke-RestMethod -Method Patch -Uri "$BaseUrl/api/qr/$token" `
-    -ContentType 'application/json' -Body '{"url": "https://new-target.com"}'
+    -ContentType 'application/json' `
+    -Headers $authHeaders `
+    -Body '{"url": "https://new-target.com"}'
 Assert-Eq '4. PATCH returns updated original_url' $patched.original_url 'https://new-target.com'
 
 # ----- 5. Redirect now goes to new URL --------------------------------------
 $r5 = Get-StatusAndLocation "$BaseUrl/r/$token"
 Assert-Eq '5. Redirect after PATCH points at new URL' $r5.Location 'https://new-target.com'
 
-# ----- 6. DELETE ------------------------------------------------------------
-$del = Invoke-RestMethod -Method Delete -Uri "$BaseUrl/api/qr/$token"
+# ----- 6. DELETE (requires edit_token) --------------------------------------
+$del = Invoke-RestMethod -Method Delete -Uri "$BaseUrl/api/qr/$token" -Headers $authHeaders
 Assert-Eq '6. DELETE returns "Deleted"' $del.detail 'Deleted'
 
 # ----- 7. Redirect after delete -> 410 --------------------------------------

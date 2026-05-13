@@ -50,3 +50,17 @@ def generate_token(url: str, db: Session) -> str:
             return token
 
     raise RuntimeError(f"Failed to generate unique token after {MAX_RETRIES} retries")
+
+
+def generate_edit_token() -> tuple[str, str]:
+    """Return `(plaintext, sha256_hex_hash)` for a new edit token.
+
+    The plaintext is 32 bytes from the OS CSPRNG, URL-safe Base64
+    encoded — ~256 bits of entropy, well past brute-force range even
+    without rate limiting on the bearer-check path. Only the hash is
+    persisted; the plaintext goes back to the caller in the create
+    response and must be held by them to perform PATCH or DELETE.
+    """
+    plaintext = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(plaintext.encode()).hexdigest()
+    return plaintext, digest

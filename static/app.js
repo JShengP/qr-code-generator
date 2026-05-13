@@ -66,6 +66,8 @@ function renderResult(data) {
   $("short-url").value = data.short_url;
   $("original-url").value = data.original_url;
   $("token").value = data.token;
+  // edit_token is shown ONCE here; the API will never return it again.
+  $("edit-token").value = data.edit_token;
   form.hidden = true;
   resultPanel.hidden = false;
 }

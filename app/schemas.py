@@ -13,6 +13,11 @@ class CreateResponse(BaseModel):
     short_url: str
     qr_code_url: str
     original_url: str
+    # One-time edit token. Returned only on creation; the DB stores
+    # only its SHA-256 hash. Required as `Authorization: Bearer ...`
+    # on PATCH/DELETE for this token. If the caller loses it, the
+    # short link is no longer editable.
+    edit_token: str
 
 
 class QRInfoResponse(BaseModel):

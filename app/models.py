@@ -23,6 +23,12 @@ class UrlMapping(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     token: Mapped[str] = mapped_column(String(8), unique=True, nullable=False, index=True)
     original_url: Mapped[str] = mapped_column(Text, nullable=False)
+    # SHA-256 hex digest of the edit_token returned at creation time.
+    # Stored hashed so an attacker who compromises the DB can't act as
+    # the owner of every existing short link. Nullable so legacy rows
+    # created before this column existed remain readable; they're
+    # treated as un-editable.
+    edit_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utc_now_naive, onupdate=_utc_now_naive

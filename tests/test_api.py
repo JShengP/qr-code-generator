@@ -11,6 +11,19 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 
+def _create(client, url="https://example.com", **extra):
+    """Helper: POST /api/qr/create, return (token, edit_token, full_json)."""
+    payload = {"url": url, **extra}
+    r = client.post("/api/qr/create", json=payload)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    return data["token"], data["edit_token"], data
+
+
+def _auth(edit_token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {edit_token}"}
+
+
 # ---------------------------------------------------------------------------
 # PROMPT.md scenarios — these mirror the 8 curl commands in the spec.
 # ---------------------------------------------------------------------------
@@ -45,8 +58,12 @@ def test_get_qr_info_returns_metadata(client):
 
 
 def test_patch_url_changes_redirect_target(client):
-    token = client.post("/api/qr/create", json={"url": "https://old.example.com"}).json()["token"]
-    r = client.patch(f"/api/qr/{token}", json={"url": "https://new.example.com"})
+    token, edit_token, _ = _create(client, "https://old.example.com")
+    r = client.patch(
+        f"/api/qr/{token}",
+        json={"url": "https://new.example.com"},
+        headers=_auth(edit_token),
+    )
     assert r.status_code == 200
     assert r.json()["original_url"] == "https://new.example.com"
 
@@ -56,8 +73,8 @@ def test_patch_url_changes_redirect_target(client):
 
 
 def test_delete_then_redirect_410(client):
-    token = client.post("/api/qr/create", json={"url": "https://example.com"}).json()["token"]
-    assert client.delete(f"/api/qr/{token}").status_code == 200
+    token, edit_token, _ = _create(client)
+    assert client.delete(f"/api/qr/{token}", headers=_auth(edit_token)).status_code == 200
 
     r = client.get(f"/r/{token}", follow_redirects=False)
     assert r.status_code == 410
@@ -184,11 +201,15 @@ def test_tz_aware_iso_z_suffix_does_not_crash(client):
 
 def test_cache_invalidated_on_patch(client):
     """PATCH must evict cache so the next redirect sees the new URL."""
-    token = client.post("/api/qr/create", json={"url": "https://a.com"}).json()["token"]
+    token, edit_token, _ = _create(client, "https://a.com")
     # Warm cache
     client.get(f"/r/{token}", follow_redirects=False)
     # Update
-    client.patch(f"/api/qr/{token}", json={"url": "https://b.com"})
+    client.patch(
+        f"/api/qr/{token}",
+        json={"url": "https://b.com"},
+        headers=_auth(edit_token),
+    )
     # Next redirect must show new URL (cache must have been invalidated)
     r = client.get(f"/r/{token}", follow_redirects=False)
     assert r.headers["location"] == "https://b.com"
@@ -196,9 +217,9 @@ def test_cache_invalidated_on_patch(client):
 
 def test_cache_invalidated_on_delete(client):
     """DELETE must evict cache so subsequent redirect 410s instead of serving stale."""
-    token = client.post("/api/qr/create", json={"url": "https://a.com"}).json()["token"]
+    token, edit_token, _ = _create(client, "https://a.com")
     client.get(f"/r/{token}", follow_redirects=False)  # warm cache
-    client.delete(f"/api/qr/{token}")
+    client.delete(f"/api/qr/{token}", headers=_auth(edit_token))
     r = client.get(f"/r/{token}", follow_redirects=False)
     assert r.status_code == 410
 
@@ -285,6 +306,90 @@ def test_userinfo_in_url_rejected(client):
     ]:
         r = client.post("/api/qr/create", json={"url": url})
         assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 (post-review) — edit_token bearer auth on PATCH/DELETE.
+# ---------------------------------------------------------------------------
+
+
+def test_create_response_includes_edit_token(client):
+    """The create response must surface a one-time edit_token."""
+    _, edit_token, body = _create(client)
+    assert isinstance(edit_token, str)
+    assert len(edit_token) >= 32  # token_urlsafe(32) is at least 43 chars
+    # `edit_token` must be present in the create response and ONLY there.
+    assert "edit_token" in body
+
+
+def test_get_info_does_not_leak_edit_token(client):
+    """GET /api/qr/{token} must NOT include the edit_token."""
+    token, _edit_token, _ = _create(client)
+    r = client.get(f"/api/qr/{token}")
+    assert r.status_code == 200
+    assert "edit_token" not in r.json()
+    assert "edit_token_hash" not in r.json()
+
+
+def test_patch_without_auth_returns_401(client):
+    token, _edit_token, _ = _create(client)
+    r = client.patch(f"/api/qr/{token}", json={"url": "https://new.com"})
+    assert r.status_code == 401
+    assert "Bearer" in r.json()["detail"]
+
+
+def test_patch_with_wrong_token_returns_401(client):
+    token, _edit_token, _ = _create(client)
+    r = client.patch(
+        f"/api/qr/{token}",
+        json={"url": "https://new.com"},
+        headers={"Authorization": "Bearer wrong-token-here"},
+    )
+    assert r.status_code == 401
+
+
+def test_patch_with_malformed_auth_header_returns_401(client):
+    """Authorization without `Bearer ` prefix must be rejected."""
+    token, edit_token, _ = _create(client)
+    r = client.patch(
+        f"/api/qr/{token}",
+        json={"url": "https://new.com"},
+        headers={"Authorization": edit_token},  # missing `Bearer ` prefix
+    )
+    assert r.status_code == 401
+
+
+def test_delete_without_auth_returns_401(client):
+    token, _edit_token, _ = _create(client)
+    r = client.delete(f"/api/qr/{token}")
+    assert r.status_code == 401
+
+
+def test_delete_with_wrong_token_returns_401_and_link_still_works(client):
+    """A failed delete attempt must not soft-delete the link."""
+    token, _edit_token, _ = _create(client)
+    r = client.delete(
+        f"/api/qr/{token}",
+        headers={"Authorization": "Bearer attacker-bearer"},
+    )
+    assert r.status_code == 401
+
+    # Sanity: original redirect still works
+    r2 = client.get(f"/r/{token}", follow_redirects=False)
+    assert r2.status_code == 302
+
+
+def test_edit_tokens_isolated_between_tokens(client):
+    """Holder of one edit_token must not be able to PATCH a different token."""
+    _t1, edit_token1, _ = _create(client, "https://a.com")
+    t2, _edit_token2, _ = _create(client, "https://b.com")
+
+    r = client.patch(
+        f"/api/qr/{t2}",
+        json={"url": "https://hijack.com"},
+        headers=_auth(edit_token1),
+    )
+    assert r.status_code == 401
 
 
 def test_crlf_in_url_rejected(client):

@@ -1,8 +1,10 @@
+import hashlib
+import hmac
 import io
 from datetime import datetime, timezone
 
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -11,7 +13,7 @@ from .database import get_db
 from .limiter import limiter
 from .models import ScanEvent, UrlMapping
 from .schemas import CreateRequest, CreateResponse, QRInfoResponse, UpdateRequest
-from .token_gen import generate_token
+from .token_gen import generate_edit_token, generate_token
 from .url_validator import validate_url
 
 router = APIRouter()
@@ -60,12 +62,14 @@ def create_qr(request: Request, req: CreateRequest, db: Session = Depends(get_db
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     token = generate_token(normalized_url, db)
+    edit_token_plain, edit_token_hash = generate_edit_token()
 
     expires_at = _to_naive_utc(req.expires_at)
 
     mapping = UrlMapping(
         token=token,
         original_url=normalized_url,
+        edit_token_hash=edit_token_hash,
         expires_at=expires_at,
     )
     db.add(mapping)
@@ -82,6 +86,7 @@ def create_qr(request: Request, req: CreateRequest, db: Session = Depends(get_db
         short_url=short_url,
         qr_code_url=f"{BASE_URL}/api/qr/{token}/image",
         original_url=normalized_url,
+        edit_token=edit_token_plain,
     )
 
 
@@ -132,8 +137,14 @@ def get_qr_info(token: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/api/qr/{token}", response_model=QRInfoResponse)
-def update_qr(token: str, req: UpdateRequest, db: Session = Depends(get_db)):
+def update_qr(
+    token: str,
+    req: UpdateRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
     mapping = _get_mapping_or_404(token, db)
+    _require_edit_token(mapping, authorization)
 
     if req.url is not None:
         try:
@@ -154,8 +165,13 @@ def update_qr(token: str, req: UpdateRequest, db: Session = Depends(get_db)):
 
 
 @router.delete("/api/qr/{token}")
-def delete_qr(token: str, db: Session = Depends(get_db)):
+def delete_qr(
+    token: str,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
     mapping = _get_mapping_or_404(token, db)
+    _require_edit_token(mapping, authorization)
     mapping.is_deleted = True
     db.commit()
     # Invalidate cache
@@ -203,6 +219,37 @@ def _get_mapping_or_404(token: str, db: Session) -> UrlMapping:
     if mapping is None or mapping.is_deleted:
         raise HTTPException(status_code=404, detail="Not Found")
     return mapping
+
+
+def _require_edit_token(mapping: UrlMapping, authorization: str | None) -> None:
+    """Reject PATCH/DELETE unless the caller presents the right edit token.
+
+    The header is the standard `Authorization: Bearer <plaintext>`.
+    We hash the presented value and compare it against `edit_token_hash`
+    on the row with `hmac.compare_digest` to keep timing-attack resistance
+    on the hash comparison. Rows created before this column existed have
+    `edit_token_hash is None` and are treated as un-editable — there's
+    no way to recover a credential for them, which matches the "credential
+    is shown once at create time" semantics.
+    """
+    if mapping.edit_token_hash is None:
+        # Legacy row, or somehow created without an edit token. Refuse.
+        raise HTTPException(
+            status_code=401,
+            detail="This link is not editable (no edit_token on record).",
+        )
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing Authorization: Bearer <edit_token> header.",
+        )
+
+    presented = authorization[len("Bearer ") :].strip()
+    presented_hash = hashlib.sha256(presented.encode()).hexdigest()
+
+    if not hmac.compare_digest(presented_hash, mapping.edit_token_hash):
+        raise HTTPException(status_code=401, detail="Invalid edit_token.")
 
 
 def _record_scan(token: str, request: Request, db: Session):
