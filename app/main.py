@@ -19,16 +19,28 @@ _PROD = os.getenv("DEPLOY_ENV", "").lower() == "production"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create schema on the production engine when uvicorn starts.
+    """Create schema on startup; drain the scan-event buffer on shutdown.
 
     Moved out of module-import scope so that simply importing `app.main`
     in a test runner doesn't write `qr_code.db` to disk. The test fixture
     in `tests/conftest.py` builds its own in-memory engine and creates
     schema on it directly, and intentionally does NOT use TestClient as
     a context manager so this lifespan never fires under pytest.
+
+    On shutdown we drain `_pending_scans` so a graceful uvicorn stop
+    (SIGTERM under most process managers) commits any buffered rows
+    instead of dropping them.
     """
     Base.metadata.create_all(bind=engine)
     yield
+    # Shutdown: flush any buffered scan events using a fresh session,
+    # since per-request sessions are already torn down here.
+    from sqlalchemy.orm import Session
+
+    from .routes import force_flush_pending_scans
+
+    with Session(engine) as db:
+        force_flush_pending_scans(db)
 
 
 app = FastAPI(

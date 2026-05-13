@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import io
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -66,6 +67,62 @@ def _redirect_rate_limit() -> str:
 
 def _mutation_rate_limit() -> str:
     return MUTATION_RATE_LIMIT
+
+
+# --- Scan-event write batching -------------------------------------------
+#
+# The original implementation INSERT-then-commit'd a `scan_events` row
+# inside every redirect call, which (a) made the hot path block on disk
+# fsync and (b) gave an attacker who's evading the per-(token, ip) dedup
+# a 1:1 ratio between HTTP requests and DB writes. We now buffer scan
+# rows in memory and flush them in batches.
+#
+# Two flush triggers:
+#   1. `_pending_scans` reaches `SCAN_FLUSH_BATCH_SIZE` (size-based).
+#   2. More than `SCAN_FLUSH_INTERVAL` seconds elapsed since the last
+#      flush (time-based, so trailing partial batches don't sit forever).
+# Plus an explicit force-flush from `/analytics` so a reader sees a
+# consistent view, and a lifespan-shutdown drain in `app.main` so we
+# don't lose buffered scans on process exit.
+_pending_scans: list[dict] = []
+_pending_lock = threading.Lock()
+# Initialized to monotonic() so that `now_mono - _last_flush_time` is a
+# small positive delta from the start, not a billion seconds (which
+# would short-circuit the time-based flush at boot). Tests reset this
+# in conftest with the same `time.monotonic()` value.
+_last_flush_time: float = time.monotonic()
+
+SCAN_FLUSH_BATCH_SIZE = 10
+SCAN_FLUSH_INTERVAL = 5.0  # seconds
+
+
+def _drain_buffer_locked() -> list[dict]:
+    """Snapshot and clear `_pending_scans` under the lock. Caller flushes."""
+    global _last_flush_time
+    batch = _pending_scans[:]
+    _pending_scans.clear()
+    _last_flush_time = time.monotonic()
+    return batch
+
+
+def _flush_scans_to_db(batch: list[dict], db: Session) -> None:
+    """One bulk INSERT + commit for the snapshot. No-op on empty input."""
+    if not batch:
+        return
+    db.add_all(ScanEvent(**row) for row in batch)
+    db.commit()
+
+
+def force_flush_pending_scans(db: Session) -> None:
+    """Public entry: drain the buffer and write whatever's there.
+
+    Called by `/analytics` so a reader sees their own scans, and by
+    the lifespan shutdown handler in `app.main` so a graceful stop
+    doesn't lose buffered rows.
+    """
+    with _pending_lock:
+        batch = _drain_buffer_locked()
+    _flush_scans_to_db(batch, db)
 
 
 def _now_naive() -> datetime:
@@ -242,6 +299,10 @@ def get_qr_image(token: str, db: Session = Depends(get_db)):
 def get_analytics(token: str, db: Session = Depends(get_db)):
     _get_mapping_or_404(token, db)
 
+    # Buffered scans aren't yet visible to a COUNT/GROUP BY query —
+    # drain the buffer first so a caller sees a consistent view.
+    force_flush_pending_scans(db)
+
     total = db.query(func.count(ScanEvent.id)).filter(ScanEvent.token == token).scalar()
 
     daily = (
@@ -300,12 +361,13 @@ def _require_edit_token(mapping: UrlMapping, authorization: str | None) -> None:
 
 
 def _record_scan(token: str, request: Request, db: Session):
-    """Insert one ScanEvent, with per-(token, ip) burst dedup.
+    """Buffer one ScanEvent. Flushes on size or time threshold.
 
-    Records every scan when `SCAN_DEDUP_WINDOW <= 0`; otherwise skips
-    the INSERT if the same `(token, ip)` pair already recorded a scan
-    within the window. The redirect handler still 302s either way —
-    this only protects the DB from refresh-spam.
+    Per-(token, ip) burst dedup runs first — if the same client just
+    scanned within `SCAN_DEDUP_WINDOW` seconds, this returns without
+    even buffering. Otherwise the row is appended to `_pending_scans`
+    and flushed in batches; the synchronous commit per redirect is
+    gone.
     """
     ip = request.client.host if request.client else "unknown"
 
@@ -324,10 +386,22 @@ def _record_scan(token: str, request: Request, db: Session):
             for k in stale:
                 _scan_last_seen.pop(k, None)
 
-    event = ScanEvent(
-        token=token,
-        user_agent=(request.headers.get("user-agent") or "")[:500] or None,
-        ip_address=ip if ip != "unknown" else None,
-    )
-    db.add(event)
-    db.commit()
+    row = {
+        "token": token,
+        "user_agent": (request.headers.get("user-agent") or "")[:500] or None,
+        "ip_address": ip if ip != "unknown" else None,
+    }
+
+    # Append; if we cross the size threshold or enough time has passed,
+    # drain the buffer and flush in one bulk INSERT.
+    batch: list[dict] = []
+    with _pending_lock:
+        _pending_scans.append(row)
+        now_mono = time.monotonic()
+        if (
+            len(_pending_scans) >= SCAN_FLUSH_BATCH_SIZE
+            or (now_mono - _last_flush_time) >= SCAN_FLUSH_INTERVAL
+        ):
+            batch = _drain_buffer_locked()
+
+    _flush_scans_to_db(batch, db)

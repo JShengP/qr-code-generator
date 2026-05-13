@@ -514,6 +514,80 @@ def test_scan_dedup_skips_rapid_scans_from_same_ip(client):
         routes_module.SCAN_DEDUP_WINDOW = 0.0
 
 
+def test_scans_are_buffered_below_batch_threshold(client):
+    """With batch=3, the first 2 scans must NOT reach the DB yet."""
+    import time
+
+    from app import routes as routes_module
+
+    routes_module.SCAN_FLUSH_BATCH_SIZE = 3
+    routes_module.SCAN_FLUSH_INTERVAL = 999.0  # disable time-based flush
+    routes_module._last_flush_time = time.monotonic()  # reset window
+    try:
+        token, _, _ = _create(client)
+
+        for _ in range(2):
+            client.get(f"/r/{token}", follow_redirects=False)
+
+        # 2 scans are buffered, DB still empty
+        assert len(routes_module._pending_scans) == 2
+        # Verify by querying analytics without the helper's auto-flush would
+        # show 0 — but analytics force-flushes. We rely on the buffer probe
+        # above for the assertion.
+    finally:
+        routes_module.SCAN_FLUSH_BATCH_SIZE = 1
+        routes_module.SCAN_FLUSH_INTERVAL = 0.0
+
+
+def test_scan_buffer_flushes_at_batch_size(client):
+    """3rd scan must cross the batch threshold and drain the buffer."""
+    import time
+
+    from app import routes as routes_module
+
+    routes_module.SCAN_FLUSH_BATCH_SIZE = 3
+    routes_module.SCAN_FLUSH_INTERVAL = 999.0
+    routes_module._last_flush_time = time.monotonic()
+    try:
+        token, _, _ = _create(client)
+
+        for _ in range(3):
+            client.get(f"/r/{token}", follow_redirects=False)
+
+        # Buffer drained to DB after the 3rd append crossed the threshold
+        assert len(routes_module._pending_scans) == 0
+
+        r = client.get(f"/api/qr/{token}/analytics")
+        assert r.json()["total_scans"] == 3
+    finally:
+        routes_module.SCAN_FLUSH_BATCH_SIZE = 1
+        routes_module.SCAN_FLUSH_INTERVAL = 0.0
+
+
+def test_analytics_force_flushes_partial_batch(client):
+    """A reader hitting /analytics must see their own un-flushed scans."""
+    import time
+
+    from app import routes as routes_module
+
+    routes_module.SCAN_FLUSH_BATCH_SIZE = 100  # high enough we won't hit it
+    routes_module.SCAN_FLUSH_INTERVAL = 999.0
+    routes_module._last_flush_time = time.monotonic()
+    try:
+        token, _, _ = _create(client)
+        client.get(f"/r/{token}", follow_redirects=False)
+        # 1 scan in buffer, 0 in DB
+        assert len(routes_module._pending_scans) == 1
+
+        r = client.get(f"/api/qr/{token}/analytics")
+        # Analytics drains the buffer first
+        assert len(routes_module._pending_scans) == 0
+        assert r.json()["total_scans"] == 1
+    finally:
+        routes_module.SCAN_FLUSH_BATCH_SIZE = 1
+        routes_module.SCAN_FLUSH_INTERVAL = 0.0
+
+
 def test_scan_dedup_records_across_different_ips(client):
     """Dedup is per-(token, ip). Different IPs must each get counted."""
     from app import routes as routes_module
