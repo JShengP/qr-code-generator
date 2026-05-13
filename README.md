@@ -30,8 +30,27 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 |---|---|---|
 | `POST /api/qr/create` | **10 / min / IP** | Hardest path: hash + retry + DB write. |
 | `GET /r/{token}` | **300 / min / IP** | Plus per-(token, ip) 1-second dedup on the scan-event INSERT, so refresh-spam can't bloat `scan_events`. |
+| `PATCH /api/qr/{token}` | **30 / min / IP** | Defense-in-depth on the bearer-token check. |
+| `DELETE /api/qr/{token}` | **30 / min / IP** | Same as PATCH. |
 
-Both via [`slowapi`](https://github.com/laurentS/slowapi). 11th create / 301st redirect within the window returns `429 Too Many Requests` with `Retry-After`. Default backend is in-process memory; swap to Redis (`storage_uri='redis://...'` in `app/limiter.py`) for multi-worker deployments.
+All via [`slowapi`](https://github.com/laurentS/slowapi). Buckets are keyed by `(endpoint, IP)` so an attacker iterating tokens shares one bucket per handler. Default backend is in-process memory; set `RATE_LIMIT_STORAGE_URI=redis://...` to share buckets across uvicorn workers.
+
+### Configuration (env vars)
+
+All configuration is centralized in [`app/config.py`](app/config.py) and reads `os.environ` at import time. Every value has a dev-safe default — set the env var only to override.
+
+| Env var | Default | What it does |
+|---|---|---|
+| `DEPLOY_ENV` | `dev` | `production` hides `/docs`, `/redoc`, `/openapi.json`. |
+| `DATABASE_URL` | `sqlite:///./qr_code.db` | SQLAlchemy URL. Postgres / MySQL also work. |
+| `BASE_URL` | `http://localhost:8000` | Public URL encoded into the QR + returned in `short_url`. |
+| `CREATE_RATE_LIMIT` | `10/minute` | slowapi expression for `POST /api/qr/create`. |
+| `REDIRECT_RATE_LIMIT` | `300/minute` | slowapi expression for `GET /r/{token}`. |
+| `MUTATION_RATE_LIMIT` | `30/minute` | slowapi expression for `PATCH`/`DELETE`. |
+| `RATE_LIMIT_STORAGE_URI` | `memory://` | `redis://host:6379/0` to share buckets across workers. |
+| `SCAN_DEDUP_WINDOW` | `1.0` | Seconds; per-(token, ip) burst dedup on scan recording. |
+| `SCAN_FLUSH_BATCH_SIZE` | `10` | Buffered scans flush after N rows. |
+| `SCAN_FLUSH_INTERVAL` | `5.0` | Buffered scans flush after N seconds since last flush. |
 
 **`PATCH` and `DELETE` require auth.** The create response includes a one-time `edit_token` (~256 bits, returned only on creation); subsequent PATCH/DELETE calls must include `Authorization: Bearer <edit_token>`. The DB stores only the SHA-256 hash. Losing the `edit_token` means losing the ability to edit the link.
 

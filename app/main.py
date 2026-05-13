@@ -1,4 +1,3 @@
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,14 +6,10 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from .config import IS_PRODUCTION
 from .database import Base, engine
 from .limiter import limiter
 from .routes import router
-
-# DEPLOY_ENV=production disables /docs, /redoc, and /openapi.json so the
-# auto-generated API explorer (which would otherwise expose every
-# unauthenticated endpoint to anyone) doesn't ship to production.
-_PROD = os.getenv("DEPLOY_ENV", "").lower() == "production"
 
 
 @asynccontextmanager
@@ -46,9 +41,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="QR Code Generator Prototype",
     lifespan=lifespan,
-    docs_url=None if _PROD else "/docs",
-    redoc_url=None if _PROD else "/redoc",
-    openapi_url=None if _PROD else "/openapi.json",
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None if IS_PRODUCTION else "/redoc",
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
 )
 
 # slowapi wiring: the decorator on individual routes does the bucket

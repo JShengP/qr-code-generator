@@ -12,6 +12,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from . import config
 from .database import get_db
 from .limiter import limiter
 from .models import ScanEvent, UrlMapping
@@ -39,26 +40,29 @@ router = APIRouter()
 # warm working set survives while cold tokens get dropped.
 redirect_cache: TTLCache = TTLCache(maxsize=10_000, ttl=3600)
 
-BASE_URL = "http://localhost:8000"
+# Pulled from config so deployments can override via env (BASE_URL=
+# https://qr.example.com). Re-exposed at module scope so tests can
+# monkey-patch one location without re-reading env.
+BASE_URL = config.BASE_URL
 
 # Per-(token, ip) timestamp of the most recent scan we recorded. Used to
 # dedupe rapid-fire refreshes from the same client so a single attacker
 # can't bloat `scan_events` from one IP. The redirect itself still serves
 # 302 — only the DB INSERT is skipped on hit.
 _scan_last_seen: dict[tuple[str, str], float] = {}
-SCAN_DEDUP_WINDOW = 1.0  # seconds; tests monkey-patch to 0.0 to disable
+SCAN_DEDUP_WINDOW = config.SCAN_DEDUP_WINDOW
 
-# Per-IP rate limit for the redirect endpoint. Resolved via callable so
-# tests can lower it without re-importing. 300/min ≈ 5 req/sec — high
-# enough to be transparent for legitimate NAT'd traffic, low enough to
-# meaningfully cap brute-force flood. Read-only writes (the scan event)
-# are further bounded by the per-(token, ip) dedup window above.
-REDIRECT_RATE_LIMIT = "300/minute"
-# Mutation endpoints (PATCH/DELETE) share a tighter bucket. The bearer
-# token check is constant-time + 256 bits of entropy, so brute force is
-# already infeasible — this limit is defense in depth against a noisy
-# attacker who happens to be exploring 401-vs-other-status side channels.
-MUTATION_RATE_LIMIT = "30/minute"
+# Per-IP rate limits resolved via callables so tests can lower them
+# without re-importing. Defaults from config / env. 300/min on redirect
+# ≈ 5 req/sec is transparent for legitimate NAT traffic; 30/min on
+# mutations is defense-in-depth on the bearer-token check.
+REDIRECT_RATE_LIMIT = config.REDIRECT_RATE_LIMIT
+MUTATION_RATE_LIMIT = config.MUTATION_RATE_LIMIT
+CREATE_RATE_LIMIT = config.CREATE_RATE_LIMIT
+
+
+def _create_rate_limit() -> str:
+    return CREATE_RATE_LIMIT
 
 
 def _redirect_rate_limit() -> str:
@@ -92,8 +96,10 @@ _pending_lock = threading.Lock()
 # in conftest with the same `time.monotonic()` value.
 _last_flush_time: float = time.monotonic()
 
-SCAN_FLUSH_BATCH_SIZE = 10
-SCAN_FLUSH_INTERVAL = 5.0  # seconds
+# Pulled from config so deployments can tune via env. Module-level
+# constants so tests monkey-patch one location.
+SCAN_FLUSH_BATCH_SIZE = config.SCAN_FLUSH_BATCH_SIZE
+SCAN_FLUSH_INTERVAL = config.SCAN_FLUSH_INTERVAL
 
 
 def _drain_buffer_locked() -> list[dict]:
@@ -151,7 +157,7 @@ def _to_naive_utc(dt: datetime | None) -> datetime | None:
 
 
 @router.post("/api/qr/create", response_model=CreateResponse)
-@limiter.limit("10/minute")
+@limiter.limit(_create_rate_limit)
 def create_qr(request: Request, req: CreateRequest, db: Session = Depends(get_db)):
     # slowapi reads the client IP off `request`; the param must be named
     # `request` for the decorator to find it. We don't otherwise use it

@@ -1,0 +1,53 @@
+"""Single source of truth for env-driven configuration.
+
+Every value here falls back to a hardcoded default that's safe for
+local development; set the matching env var to override in any other
+environment. Reads happen exactly once, at module import time — there
+is no runtime watch or reload. Tests that need a different value
+monkey-patch the module-level constant in `app.routes` (or `app.main`,
+etc.) where the value is actually consumed.
+
+The conventional set of overrides:
+
+  DEPLOY_ENV               dev | production           ("dev")
+  DATABASE_URL             SQLAlchemy URL            (sqlite:///./qr_code.db)
+  BASE_URL                 public URL for QR codes   (http://localhost:8000)
+
+  CREATE_RATE_LIMIT        slowapi expression        ("10/minute")
+  REDIRECT_RATE_LIMIT      slowapi expression        ("300/minute")
+  MUTATION_RATE_LIMIT      slowapi expression        ("30/minute")
+  RATE_LIMIT_STORAGE_URI   limits storage backend    ("memory://")
+
+  SCAN_DEDUP_WINDOW        float seconds             (1.0)
+  SCAN_FLUSH_BATCH_SIZE    int                       (10)
+  SCAN_FLUSH_INTERVAL      float seconds             (5.0)
+"""
+from __future__ import annotations
+
+import os
+
+# --- Deployment / environment ------------------------------------------
+DEPLOY_ENV: str = os.getenv("DEPLOY_ENV", "").lower()
+IS_PRODUCTION: bool = DEPLOY_ENV == "production"
+
+# --- Database -----------------------------------------------------------
+DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./qr_code.db")
+
+# --- Public-facing URL --------------------------------------------------
+# Used to construct `short_url` and `qr_code_url` in API responses, and
+# what the QR-code PNG actually encodes.
+BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
+
+# --- slowapi rate limits ------------------------------------------------
+CREATE_RATE_LIMIT: str = os.getenv("CREATE_RATE_LIMIT", "10/minute")
+REDIRECT_RATE_LIMIT: str = os.getenv("REDIRECT_RATE_LIMIT", "300/minute")
+MUTATION_RATE_LIMIT: str = os.getenv("MUTATION_RATE_LIMIT", "30/minute")
+# limits-style URI for slowapi's storage backend. `memory://` is the
+# default and is per-process; set to `redis://host:6379/0` for a
+# shared bucket across uvicorn workers.
+RATE_LIMIT_STORAGE_URI: str = os.getenv("RATE_LIMIT_STORAGE_URI", "memory://")
+
+# --- Scan event tuning --------------------------------------------------
+SCAN_DEDUP_WINDOW: float = float(os.getenv("SCAN_DEDUP_WINDOW", "1.0"))
+SCAN_FLUSH_BATCH_SIZE: int = int(os.getenv("SCAN_FLUSH_BATCH_SIZE", "10"))
+SCAN_FLUSH_INTERVAL: float = float(os.getenv("SCAN_FLUSH_INTERVAL", "5.0"))
