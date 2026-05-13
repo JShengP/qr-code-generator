@@ -177,6 +177,82 @@ button.tertiary:hover {
   gap: 0.5rem;
 }
 
+/* Auth bar (top-right) */
+.auth-bar {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 10;
+}
+
+.auth-anon, .auth-signed-in {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.auth-signed-in #auth-email {
+  color: var(--text);
+  font-weight: 500;
+}
+
+#login-btn {
+  padding: 0.35rem 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+/* Modal */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem;
+  width: 90%;
+  max-width: 440px;
+}
+
+.modal-content h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+}
+
+.modal-content form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.modal-actions button {
+  flex: none;
+}
+
 #result {
   margin-top: 1.5rem;
   padding-top: 1.5rem;

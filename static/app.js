@@ -1,11 +1,14 @@
 // Front-end glue: vanilla fetch + DOM, no build step.
 //
-// Two flows:
+// Flows:
 //   1. CREATE — submit a URL, get back token + edit_token + QR image.
 //   2. EDIT   — same QR, change destination. PATCHes /api/qr/{token}
-//              using the edit_token captured at creation time. The
-//              printed QR keeps working unchanged because it encodes
-//              `/r/{token}`, which we never re-issue here.
+//              using the edit_token captured at creation time.
+//   3. AUTH   — Sign in via magic link. /api/auth/me on page load
+//              decides whether the top-right shows "Sign in" or
+//              "Signed in as X / Sign out". The auth state is purely
+//              cosmetic for now — it shows the QR ownership story is
+//              coming, but doesn't gate any current functionality.
 
 const $ = (id) => document.getElementById(id);
 
@@ -193,4 +196,119 @@ function formatError(body, status) {
     return body.detail.map((d) => d.msg).join("; ");
   }
   return `Request failed (HTTP ${status})`;
+}
+
+// ---------------------------------------------------------------------
+// Auth flow: magic link via email.
+// ---------------------------------------------------------------------
+
+const authAnon = $("auth-anon");
+const authSignedIn = $("auth-signed-in");
+const loginModal = $("login-modal");
+const loginForm = $("login-form");
+const loginStatus = $("login-status");
+const loginError = $("login-error");
+
+// On page load, ask the server who we are. Updates the auth bar.
+refreshAuthState();
+
+async function refreshAuthState() {
+  try {
+    const r = await fetch("/api/auth/me", { credentials: "same-origin" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (data.user) {
+      authAnon.hidden = true;
+      authSignedIn.hidden = false;
+      $("auth-email").textContent = data.user.email;
+    } else {
+      authAnon.hidden = false;
+      authSignedIn.hidden = true;
+    }
+  } catch {
+    // If /me fails (network down etc.), show the anon UI as a safe
+    // default — better to invite sign-in than to hide it.
+    authAnon.hidden = false;
+    authSignedIn.hidden = true;
+  }
+}
+
+$("login-btn").addEventListener("click", () => {
+  loginModal.hidden = false;
+  $("login-email").focus();
+  hideLoginFeedback();
+});
+
+$("login-cancel").addEventListener("click", () => {
+  loginModal.hidden = true;
+  hideLoginFeedback();
+});
+
+// Click outside the modal content closes the modal too.
+loginModal.addEventListener("click", (event) => {
+  if (event.target === loginModal) {
+    loginModal.hidden = true;
+    hideLoginFeedback();
+  }
+});
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  hideLoginFeedback();
+
+  const email = $("login-email").value.trim();
+  if (!email) return;
+
+  try {
+    const resp = await fetch("/api/auth/request-link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({ detail: resp.statusText }));
+      showLoginError(formatError(body, resp.status));
+      return;
+    }
+    // Server response is intentionally vague. In dev the magic link
+    // also lands in the uvicorn console, so we tell the user where
+    // to look.
+    showLoginOK(
+      "Check your email for the sign-in link. " +
+      "(Dev mode: link is printed to the server console.)"
+    );
+    $("login-email").value = "";
+  } catch (err) {
+    showLoginError(`Network error: ${err.message}`);
+  }
+});
+
+$("logout-btn").addEventListener("click", async () => {
+  try {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+  } catch {
+    // Best-effort on the client side. Even if the server call fails
+    // we still refresh; the cookie path-delete may have worked.
+  }
+  await refreshAuthState();
+});
+
+function showLoginOK(msg) {
+  loginStatus.textContent = msg;
+  loginStatus.hidden = false;
+  loginError.hidden = true;
+}
+
+function showLoginError(msg) {
+  loginError.textContent = msg;
+  loginError.hidden = false;
+  loginStatus.hidden = true;
+}
+
+function hideLoginFeedback() {
+  loginStatus.hidden = true;
+  loginError.hidden = true;
 }

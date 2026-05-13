@@ -7,6 +7,46 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <!-- Auth bar. Floats above `main` so the layout stays centered. -->
+  <nav id="auth-bar" class="auth-bar">
+    <!-- Filled in by app.js after GET /api/auth/me -->
+    <div id="auth-anon" class="auth-anon" hidden>
+      <button type="button" id="login-btn">Sign in</button>
+    </div>
+    <div id="auth-signed-in" class="auth-signed-in" hidden>
+      <span class="hint">Signed in as</span>
+      <span id="auth-email"></span>
+      <button type="button" id="logout-btn" class="tertiary">Sign out</button>
+    </div>
+  </nav>
+
+  <!-- Sign-in modal. Hidden by default, shown when "Sign in" is clicked. -->
+  <div id="login-modal" class="modal" hidden>
+    <div class="modal-content">
+      <h2>Sign in</h2>
+      <p class="hint">
+        Enter your email. We'll send you a one-click sign-in link.
+        No password — we don't store one.
+      </p>
+      <form id="login-form" novalidate>
+        <label for="login-email">Email</label>
+        <input
+          id="login-email"
+          type="email"
+          placeholder="you@example.com"
+          required
+          autocomplete="email"
+        />
+        <div class="modal-actions">
+          <button type="button" id="login-cancel" class="tertiary">Cancel</button>
+          <button type="submit">Send sign-in link</button>
+        </div>
+      </form>
+      <div id="login-status" class="alert alert-ok" hidden></div>
+      <div id="login-error" class="alert alert-error" hidden></div>
+    </div>
+  </div>
+
   <main>
     <header>
       <h1>QR Code Generator</h1>
