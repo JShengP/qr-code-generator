@@ -38,25 +38,32 @@ function Assert-Eq {
     }
 }
 
-# Invoke-WebRequest raises on 3xx/4xx/5xx by default; we want to inspect the
-# status code without that, so we catch and unwrap.
+# We want the raw HTTP status without auto-following 3xx. PowerShell 5.1's
+# Invoke-WebRequest is hostile here -- it throws "MaximumRedirectExceeded"
+# on the very 302 we want to inspect, NOT a WebException carrying the
+# response. Drop to the .NET HttpWebRequest API directly: it returns the
+# response object on 2xx and surfaces it through WebException on 3xx/4xx/5xx
+# the same way across PS 5.1 and 7+.
 function Get-StatusAndLocation {
     param([string]$Url)
+    $req = [System.Net.HttpWebRequest]::Create($Url)
+    $req.AllowAutoRedirect = $false
+    $req.Method = 'GET'
     try {
-        $r = Invoke-WebRequest -Uri $Url -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop
-        return @{ Status = [int]$r.StatusCode; Location = $r.Headers.Location }
+        $resp = $req.GetResponse()
+        try {
+            return @{ Status = [int]$resp.StatusCode; Location = $resp.Headers['Location'] }
+        } finally {
+            $resp.Close()
+        }
     } catch [System.Net.WebException] {
         $resp = $_.Exception.Response
         if ($null -eq $resp) { throw }
-        $loc = $resp.Headers['Location']
-        return @{ Status = [int]$resp.StatusCode; Location = $loc }
-    } catch {
-        # PS 7+ surfaces HttpResponseException
-        $resp = $_.Exception.Response
-        if ($null -ne $resp) {
-            return @{ Status = [int]$resp.StatusCode; Location = $resp.Headers.Location }
+        try {
+            return @{ Status = [int]$resp.StatusCode; Location = $resp.Headers['Location'] }
+        } finally {
+            $resp.Close()
         }
-        throw
     }
 }
 
