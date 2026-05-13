@@ -226,6 +226,78 @@ def test_unknown_static_path_returns_404(client):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Stage 9 (post-review) — SSRF / CRLF / userinfo / subdomain blocking.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "internal_url",
+    [
+        "http://127.0.0.1/admin",
+        "http://127.1.2.3/",
+        "http://[::1]/",
+        "http://10.0.0.5:8080/",
+        "http://192.168.1.1/router",
+        "http://172.16.0.1/",
+        "http://169.254.169.254/latest/meta-data/",  # AWS / Azure metadata
+        "http://0.0.0.0/",
+    ],
+)
+def test_internal_ip_hosts_rejected(client, internal_url):
+    """SSRF surface: literal IPs that point at our own network must be 422."""
+    r = client.post("/api/qr/create", json={"url": internal_url})
+    assert r.status_code == 422, f"expected 422 for {internal_url}, got {r.status_code}"
+
+
+@pytest.mark.parametrize(
+    "name_url",
+    ["http://localhost/", "http://localhost:6379/", "http://metadata.google.internal/"],
+)
+def test_internal_hostnames_rejected(client, name_url):
+    """SSRF surface: well-known internal hostnames must be 422 by name."""
+    r = client.post("/api/qr/create", json={"url": name_url})
+    assert r.status_code == 422
+
+
+def test_blocklist_matches_subdomains(client):
+    """Subdomains of a blocked registrable domain must also be blocked."""
+    for url in [
+        "https://login.evil.com",
+        "https://a.b.evil.com",
+        "https://www.evil.com/path",
+    ]:
+        r = client.post("/api/qr/create", json={"url": url})
+        assert r.status_code == 422, f"expected 422 for {url}"
+
+
+def test_blocklist_case_insensitive(client):
+    """Hostname comparison must be case-insensitive."""
+    r = client.post("/api/qr/create", json={"url": "https://EVIL.com/x"})
+    assert r.status_code == 422
+
+
+def test_userinfo_in_url_rejected(client):
+    """`user:pass@host` is a phishing primitive — reject outright."""
+    for url in [
+        "https://google.com@attacker.com/",
+        "https://admin:secret@example.com/",
+    ]:
+        r = client.post("/api/qr/create", json={"url": url})
+        assert r.status_code == 422
+
+
+def test_crlf_in_url_rejected(client):
+    """CRLF must not be smuggled into the URL — it would land in Location."""
+    for url in [
+        "https://example.com/foo\r\nX-Injected: yes",
+        "https://example.com/\nfoo",
+        "https://example.com/\tfoo",
+    ]:
+        r = client.post("/api/qr/create", json={"url": url})
+        assert r.status_code == 422, f"expected 422 for {url!r}"
+
+
 def test_create_rate_limited_after_n_requests(rate_limited_client):
     """11th create within a minute from the same IP should be 429.
 

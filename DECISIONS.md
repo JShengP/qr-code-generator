@@ -190,3 +190,50 @@ The reference has no rate limiting. We add `slowapi` and decorate only the creat
 
 - The default in-memory storage is per-process. Two uvicorn workers will track separate buckets, so a determined attacker bypasses the limit by reconnecting twice as fast. Production fix is `storage_uri='redis://...'`.
 - `get_remote_address` reads `request.client.host`, which behind a reverse proxy is the proxy's IP, not the user's. Behind Nginx/CloudFront we'd need to read `X-Forwarded-For` (configurable via slowapi's `key_func`).
+
+---
+
+# Post-review fixes
+
+After Stage 8 wrap-up, two parallel sub-agent reviews (general + security) surfaced ~40 findings. The entries below cover the substantive code changes; trivial doc / cleanup fixes are in the chore commit and not repeated here.
+
+## Post-review #1 — chore: lifespan, docs gating, doc fixes
+
+Commit `3651924`. Four cleanups bundled:
+
+- `Base.metadata.create_all` moved into a FastAPI lifespan context. The original module-level call wrote `qr_code.db` to disk every time `app.main` was imported — including from pytest, which doesn't need it (the test fixture builds its own in-memory engine).
+- `tests/conftest.py` switched to `TestClient(app)` without the `with` context, so the new lifespan doesn't fire under pytest. The schema-on-test-engine setup the fixture already does is sufficient.
+- `/docs`, `/redoc`, and `/openapi.json` are now gated on a `DEPLOY_ENV=production` env var. Default is dev (everything exposed). Production deployments turn it off so the Swagger "Try it out" button doesn't ship as a one-click attack tool while PATCH/DELETE are still unauthenticated.
+- ANSWERS.md Q2 corrected: the pre-insert `token_exists_in_db` SELECT catches the collision, not the unique-constraint `IntegrityError`. The constraint exists as a safety net for the (theoretical) concurrent-SELECT race we don't currently exercise.
+- DECISIONS.md Stage 5 corrected: 22 → 25 tests.
+
+## Post-review #2 — feat(security): SSRF and CRLF hardening in url_validator
+
+Commit (this one). The security agent's review identified the URL validator as the largest attack surface in the system because the redirect handler ultimately writes the stored URL into a `Location` response header that browsers honor. Four behavioral changes:
+
+1. **SSRF block on IP-literal hosts.** `is_internal_ip()` resolves the hostname as a literal IP via `ipaddress.ip_address` and rejects anything in `is_loopback / is_private / is_link_local / is_reserved / is_multicast / is_unspecified`. This covers `127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` (link-local + AWS/Azure metadata `169.254.169.254`), `::1`, `fc00::/7`, and `0.0.0.0`. The original validator blocked exactly three public domains and nothing else; an attacker could trivially create a QR pointing at someone's home router, a corporate Redis, or a cloud-metadata endpoint, and the redirect would carry the victim's browser there.
+
+2. **Internal hostnames blocked by name.** A name like `localhost` or `metadata.google.internal` only resolves to its dangerous IP at fetch time, after our validator has run. The `BLOCKED_HOSTNAMES` set rejects the common ones by string match. This isn't a complete defense — an attacker can register a public DNS name that resolves to `127.0.0.1` (DNS rebinding) and bypass the static check — but it closes the trivial pathway and matches what production URL shorteners do at the validation stage.
+
+3. **Userinfo (`user:pass@host`) rejected.** `https://google.com@attacker.com` parses with `hostname='attacker.com'`, but a casual reader scanning the printed QR sees `google.com`. We strip the affordance entirely. Bonus: storing credentials in `original_url` and re-emitting them in `Location:` headers and access logs was a separate disclosure risk this also closes.
+
+4. **Subdomain matching on the blocklist.** The original `hostname.lower() in BLOCKED_DOMAINS` exact-match check let `login.evil.com`, `a.b.evil.com`, and `www.evil.com` all bypass. We now also check `h.endswith("." + blocked)` for each entry. Note: this doesn't handle IDN / punycode homographs — a follow-up would integrate `tldextract` and IDNA decoding, but that's a deeper change for another commit.
+
+**Plus:** CRLF / NUL / tab rejection before parsing (`_FORBIDDEN_URL_CHARS`). Starlette is believed to escape CR/LF in `Location` headers, but a defense-in-depth check at validation time costs nothing and removes the attack class entirely.
+
+**Tests added (8 cases, in `tests/test_api.py`):**
+
+- `test_internal_ip_hosts_rejected` (parametrized, 8 IPs including cloud metadata + loopback + RFC 1918 + IPv6)
+- `test_internal_hostnames_rejected` (parametrized, `localhost` / `localhost:6379` / GCP metadata name)
+- `test_blocklist_matches_subdomains`
+- `test_blocklist_case_insensitive`
+- `test_userinfo_in_url_rejected`
+- `test_crlf_in_url_rejected`
+
+40/40 tests now pass (was 25). Each new test fails against the pre-fix validator.
+
+**Known gaps deferred (worth a follow-up):**
+
+- IDN / punycode homograph: `https://xn--vil-7ka.com` (visually "еvil.com") still passes. Needs IDNA decoding before blocklist comparison.
+- DNS rebinding: a public name that resolves to `127.0.0.1` only at fetch time bypasses `is_internal_ip`. Defense is at the HTTP-client layer, not the URL validator.
+- The `BLOCKED_DOMAINS` set is hardcoded and tiny. Production wants a sourced feed (Google Safe Browsing API, PhishTank).
