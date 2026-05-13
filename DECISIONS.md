@@ -2,6 +2,8 @@
 
 A running log of choices that **differ from the reference `answers/` implementation** in the build-moat-live-sessions repo, with the reasoning. Each entry is anchored to the commit/stage that introduced it.
 
+**Post-Stage-8 review fixes** are recorded at the end under "Post-review fixes" — these address findings from the parallel general/security code review run after Stage 8 wrap-up.
+
 ---
 
 ## Stage 2 — `generate_token`: CSPRNG nonce instead of timestamp
@@ -131,7 +133,7 @@ Validated end-to-end with `curl.exe` against a local uvicorn:
 
 The reference repo has no test suite — `answers/` is implementation only. We add two:
 
-1. **`tests/test_api.py` (22 tests, pytest + FastAPI TestClient)** — covers all 8 PROMPT.md scenarios plus regressions specific to the Stage 2–4 deviations:
+1. **`tests/test_api.py` (25 tests, pytest + FastAPI TestClient)** — covers all 8 PROMPT.md scenarios plus regressions specific to the Stage 2–4 deviations:
    - URL normalization preserves path/query case
    - No `http → https` upgrade
    - Root-only trailing slash collapses only when no query/fragment follows

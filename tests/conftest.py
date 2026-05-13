@@ -46,14 +46,23 @@ def client():
     # The dedicated rate-limit test re-enables it locally.
     limiter.enabled = False
 
-    with TestClient(app) as c:
-        yield c
-
-    app.dependency_overrides.clear()
-    routes_module.redirect_cache.clear()
-    limiter.enabled = True
-    limiter.reset()
-    engine.dispose()
+    # NOTE: TestClient is intentionally NOT used as a context manager
+    # here. The `with` form fires the ASGI lifespan, which calls
+    # Base.metadata.create_all() on the production file engine and
+    # writes qr_code.db to disk on every test run. We don't need
+    # lifespan in tests — the schema is already created on the
+    # in-memory engine above, and limiter/router registration happens
+    # at module import.
+    client = TestClient(app)
+    try:
+        yield client
+    finally:
+        client.close()
+        app.dependency_overrides.clear()
+        routes_module.redirect_cache.clear()
+        limiter.enabled = True
+        limiter.reset()
+        engine.dispose()
 
 
 @pytest.fixture(scope="function")

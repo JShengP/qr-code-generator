@@ -1,3 +1,5 @@
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,9 +11,33 @@ from .database import Base, engine
 from .limiter import limiter
 from .routes import router
 
-Base.metadata.create_all(bind=engine)
+# DEPLOY_ENV=production disables /docs, /redoc, and /openapi.json so the
+# auto-generated API explorer (which would otherwise expose every
+# unauthenticated endpoint to anyone) doesn't ship to production.
+_PROD = os.getenv("DEPLOY_ENV", "").lower() == "production"
 
-app = FastAPI(title="QR Code Generator Prototype")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create schema on the production engine when uvicorn starts.
+
+    Moved out of module-import scope so that simply importing `app.main`
+    in a test runner doesn't write `qr_code.db` to disk. The test fixture
+    in `tests/conftest.py` builds its own in-memory engine and creates
+    schema on it directly, and intentionally does NOT use TestClient as
+    a context manager so this lifespan never fires under pytest.
+    """
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
+app = FastAPI(
+    title="QR Code Generator Prototype",
+    lifespan=lifespan,
+    docs_url=None if _PROD else "/docs",
+    redoc_url=None if _PROD else "/redoc",
+    openapi_url=None if _PROD else "/openapi.json",
+)
 
 # slowapi wiring: the decorator on individual routes does the bucket
 # check; we just register the shared limiter on app.state (slowapi

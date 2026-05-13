@@ -58,7 +58,7 @@ Looped up to `MAX_RETRIES = 10`; we check the DB after each attempt and accept t
 
 **What happens on a collision:**
 
-Two different URLs producing the same 7-char token would mean their full 32-byte SHA-256 digests agree in the first ~42 bits worth of Base62 output. When the second insert hits, SQLAlchemy raises an `IntegrityError` on the unique constraint, the retry loop catches it via `token_exists_in_db`, picks a new nonce, and re-hashes. The first URL keeps its token; the second gets a fresh one. From the user's perspective, nothing observable happens — just an extra ~50 µs of CPU.
+Two different URLs producing the same 7-char token would mean their full 32-byte SHA-256 digests agree in the first ~42 bits worth of Base62 output. When the would-be collision happens, the pre-insert `token_exists_in_db` SELECT catches it before the INSERT ever runs, the retry loop picks a new nonce, and re-hashes. The first URL keeps its token; the second gets a fresh one. The DB's `unique=True` constraint on `token` is a safety net for the (theoretical) race between two concurrent SELECTs that both see "no row" before either commits — in practice we never see this fire because the create endpoint serializes per-request DB access. From the user's perspective, nothing observable happens — just an extra ~50 µs of CPU.
 
 **How probability scales (birthday paradox):**
 
