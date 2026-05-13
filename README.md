@@ -2,7 +2,7 @@
 
 A dynamic QR code service: submit a URL, get back a short token + scannable PNG. The QR encodes a short URL that 302-redirects through this server, so the destination can be modified after the QR has been printed.
 
-> Work in progress — built in stages from the [build-moat-live-sessions](https://github.com/anthropics/anthropic-cookbook) QR exercise scaffold.
+> Work in progress — built in stages from the [build-moat-live-sessions](https://github.com/bohr109/build-moat-live-sessions) QR exercise scaffold.
 
 ## Status
 
