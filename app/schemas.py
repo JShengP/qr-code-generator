@@ -39,3 +39,23 @@ class RotateEditTokenResponse(BaseModel):
     # DB stores only its SHA-256 hash. The previous token is no longer
     # valid the instant this response is produced.
     edit_token: str
+
+
+# --- Auth ------------------------------------------------------------
+
+
+class MagicLinkRequest(BaseModel):
+    email: str
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    name: str | None
+    provider: str
+
+
+class MeResponse(BaseModel):
+    # Wrapping in an envelope so the response shape stays consistent
+    # whether the caller is logged in (user populated) or not (null).
+    user: UserResponse | None

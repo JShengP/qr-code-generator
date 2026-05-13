@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -47,3 +47,63 @@ class ScanEvent(Base):
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
 
     __table_args__ = (Index("idx_token_scanned", "token", "scanned_at"),)
+
+
+class User(Base):
+    """An identity. Created the first time someone successfully verifies
+    a magic link (or, later, completes an OAuth callback).
+
+    We never store passwords — auth is purely via magic link or OAuth.
+    `provider` records which path created the account; the same email
+    going through two providers will produce the same user record
+    because of the unique constraint on `email`.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(254), unique=True, nullable=False, index=True)
+    name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # "email" for magic-link signups; "github" / "google" once OAuth lands.
+    provider: Mapped[str] = mapped_column(String(20), nullable=False, default="email")
+    # Provider's user ID (GitHub numeric ID, Google sub, etc.). NULL for email.
+    provider_user_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
+
+
+class UserSession(Base):
+    """A logged-in session. The `id` is an opaque 256-bit random token
+    stored in a cookie; the row lives in the DB so logout is one DELETE
+    and so we can list / revoke sessions per user later.
+
+    Named UserSession (not Session) to avoid shadowing
+    `sqlalchemy.orm.Session` everywhere else in the codebase.
+    """
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
+
+
+class MagicLink(Base):
+    """A pending login. Created when someone hits /api/auth/request-link;
+    consumed when they click the emailed link. Single-use: once
+    `consumed_at` is set, re-using the same token returns 400.
+
+    The `email` is captured at request time rather than dereferencing
+    a user FK so the link can pre-register an account: the verify
+    handler finds-or-creates the User by email at consumption time.
+    """
+
+    __tablename__ = "magic_links"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)

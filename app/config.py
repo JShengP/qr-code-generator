@@ -51,3 +51,19 @@ RATE_LIMIT_STORAGE_URI: str = os.getenv("RATE_LIMIT_STORAGE_URI", "memory://")
 SCAN_DEDUP_WINDOW: float = float(os.getenv("SCAN_DEDUP_WINDOW", "1.0"))
 SCAN_FLUSH_BATCH_SIZE: int = int(os.getenv("SCAN_FLUSH_BATCH_SIZE", "10"))
 SCAN_FLUSH_INTERVAL: float = float(os.getenv("SCAN_FLUSH_INTERVAL", "5.0"))
+
+# --- Auth ---------------------------------------------------------------
+# Cookie name for the opaque session token. We don't use a JWT — the
+# session ID is a 256-bit random string stored in the `user_sessions`
+# table; revocation is just `DELETE FROM user_sessions WHERE id = ...`.
+COOKIE_NAME: str = os.getenv("SESSION_COOKIE_NAME", "qrs_session")
+SESSION_TTL_DAYS: int = int(os.getenv("SESSION_TTL_DAYS", "30"))
+MAGIC_LINK_TTL_MINUTES: int = int(os.getenv("MAGIC_LINK_TTL_MINUTES", "15"))
+# Rate limit on the request-link endpoint to keep one IP from spamming
+# someone else's inbox.
+AUTH_REQUEST_RATE_LIMIT: str = os.getenv("AUTH_REQUEST_RATE_LIMIT", "3/minute")
+
+# Email provider selection. Empty value => ConsoleEmailService (dev
+# mode, prints link to stdout). Future: "resend" / "smtp" / etc.
+EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "").lower()
+EMAIL_FROM: str = os.getenv("EMAIL_FROM", "noreply@localhost")
