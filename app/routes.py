@@ -1,5 +1,5 @@
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 
 import qrcode
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,32 +15,62 @@ from .url_validator import validate_url
 
 router = APIRouter()
 
-# In-memory cache (simulates Redis for prototype)
-redirect_cache: dict[str, str] = {}
+# In-memory cache (simulates Redis for prototype).
+# Stores (url, expires_at_naive_utc | None) so the redirect handler can
+# evict expired entries on hit instead of serving them past their TTL.
+redirect_cache: dict[str, tuple[str, datetime | None]] = {}
 
 BASE_URL = "http://localhost:8000"
 
 
+def _now_naive() -> datetime:
+    """Naive UTC `now`, comparable with the naive DateTime columns in models.py.
+
+    `datetime.utcnow()` is deprecated in Python 3.12+; this is the
+    forward-compatible spelling that still produces a naive value so it
+    compares cleanly with `expires_at`.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _to_naive_utc(dt: datetime | None) -> datetime | None:
+    """Coerce a possibly tz-aware datetime to naive UTC.
+
+    Pydantic parses ISO strings ending in `Z` or `+00:00` as tz-aware
+    datetimes; the DB column is declared without `timezone=True`, so
+    mixing both styles raises `TypeError` on `<`/`>` comparisons. We
+    normalize everything to naive UTC at the application boundary.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 @router.post("/api/qr/create", response_model=CreateResponse)
 def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
-    try:                                                                                                                                                           
-        normalized_url = validate_url(req.url)                
-    except ValueError as e:                                                                                                                                        
+    try:
+        normalized_url = validate_url(req.url)
+    except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     token = generate_token(normalized_url, db)
+
+    expires_at = _to_naive_utc(req.expires_at)
 
     mapping = UrlMapping(
         token=token,
         original_url=normalized_url,
-        expires_at=req.expires_at,
+        expires_at=expires_at,
     )
     db.add(mapping)
     db.commit()
 
     short_url = f"{BASE_URL}/r/{token}"
 
-    # Warm cache
-    redirect_cache[token] = normalized_url
+    # Warm cache with the same expiry the DB sees, so the redirect handler
+    # can short-circuit without a DB hit.
+    redirect_cache[token] = (normalized_url, expires_at)
 
     return CreateResponse(
         token=token,
@@ -52,19 +82,42 @@ def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
 
 @router.get("/r/{token}")
 def redirect(token: str, request: Request, db: Session = Depends(get_db)):
-    """Redirect fallback flow: Cache -> DB -> 404/410 (from slides mermaid diagram)"""
-    # TODO: Implement this function
-    #
-    # Design decision: the redirect path is the hottest path in the system, so
-    # we use a cache-first strategy (Cache -> DB -> 404/410) to minimize DB load
-    # while still handling soft-deleted and expired links.
-    #
-    # Hints:
-    # 1. Check redirect_cache first — on hit, call _record_scan() and return
-    #    RedirectResponse(status_code=302).
-    # 2. On miss, query the DB: raise 404 if not found, 410 if is_deleted or
-    #    past expires_at; otherwise warm the cache, _record_scan(), and 302.
-    raise NotImplementedError("redirect() is not yet implemented")
+    """Cache → DB → 404/410. The hottest path in the system.
+
+    The cache stores (url, expires_at) so we can serve permanent links
+    AND time-limited links from memory. On a cache hit past TTL we evict
+    the entry and fall through to the DB path, which produces the 410
+    response with the canonical "expired" detail.
+    """
+    now = _now_naive()
+
+    # ----- Cache path ---------------------------------------------------
+    cached = redirect_cache.get(token)
+    if cached is not None:
+        url, exp = cached
+        if exp is None or exp > now:
+            _record_scan(token, request, db)
+            return RedirectResponse(url=url, status_code=302)
+        # Cached entry has expired — evict and let the DB path handle 410.
+        redirect_cache.pop(token, None)
+
+    # ----- DB path ------------------------------------------------------
+    mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
+
+    if mapping is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if mapping.is_deleted:
+        raise HTTPException(status_code=410, detail="Gone — this link has been deleted")
+
+    if mapping.expires_at is not None and mapping.expires_at <= now:
+        raise HTTPException(status_code=410, detail="Gone — this link has expired")
+
+    # Warm cache with the DB-observed expiry so the next hit can short-circuit.
+    redirect_cache[token] = (mapping.original_url, mapping.expires_at)
+
+    _record_scan(token, request, db)
+    return RedirectResponse(url=mapping.original_url, status_code=302)
 
 
 @router.get("/api/qr/{token}", response_model=QRInfoResponse)
@@ -86,7 +139,7 @@ def update_qr(token: str, req: UpdateRequest, db: Session = Depends(get_db)):
         redirect_cache.pop(token, None)
 
     if req.expires_at is not None:
-        mapping.expires_at = req.expires_at
+        mapping.expires_at = _to_naive_utc(req.expires_at)
         # Invalidate cache
         redirect_cache.pop(token, None)
 
