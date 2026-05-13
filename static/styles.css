@@ -12,6 +12,20 @@
 
 * { box-sizing: border-box; }
 
+/* Make the HTML `hidden` attribute actually hide elements that have
+ * an explicit `display: flex/grid/block` set on them. The user-agent
+ * stylesheet for `[hidden]` is just `display: none` with low
+ * specificity, so any class or element rule that sets a different
+ * display value beats it. `!important` here is the canonical
+ * enforcement of intended HTML semantics, not a hack.
+ *
+ * This globally replaces the per-class `.modal[hidden]`,
+ * `.auth-anon[hidden]`, etc. rules we previously had to write each
+ * time a new component used `display: flex` and a `hidden` toggle. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -198,13 +212,7 @@ button.tertiary:hover {
   padding: 0.4rem 0.75rem;
   font-size: 0.85rem;
 }
-
-/* `display: flex` above outranks the user-agent rule that the HTML
-   `hidden` attribute compiles to (`display: none`), so without this
-   override both bars would render together on a logged-in page. */
-.auth-anon[hidden], .auth-signed-in[hidden] {
-  display: none;
-}
+/* `[hidden]` enforcement is global — see the rule at the top. */
 
 .auth-signed-in #auth-email {
   color: var(--text);
@@ -286,13 +294,7 @@ button.tertiary:hover {
   justify-content: center;
   z-index: 100;
 }
-
-/* Same fix as .auth-*: explicit `display: flex` defeats the
-   user-agent rule that backs the HTML `hidden` attribute, so the
-   modal would render even when the JS hides it. */
-.modal[hidden] {
-  display: none;
-}
+/* `[hidden]` enforcement is global — see the rule at the top. */
 
 .modal-content {
   background: var(--surface);
