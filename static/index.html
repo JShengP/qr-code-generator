@@ -95,6 +95,14 @@
         required
         autofocus
       />
+      <label for="create-expires-input">
+        Expires at <span class="hint">(optional — blank = never)</span>
+      </label>
+      <input
+        id="create-expires-input"
+        type="datetime-local"
+        autocomplete="off"
+      />
       <button type="submit">Create</button>
     </form>
 
@@ -147,16 +155,26 @@
             id="new-url-input"
             type="url"
             placeholder="https://new-destination.example/"
-            required
           />
           <button type="submit">Update</button>
         </div>
+        <label for="edit-expires-input">
+          Expires at <span class="hint">(leave blank to keep current)</span>
+        </label>
+        <input
+          id="edit-expires-input"
+          type="datetime-local"
+          autocomplete="off"
+        />
       </form>
 
       <div id="edit-status" class="alert alert-ok" hidden></div>
       <div id="edit-error" class="alert alert-error" hidden></div>
 
       <footer class="result-footer">
+        <button type="button" id="delete-qr" class="danger" title="Soft-delete this QR. The row stays in the audit log; the redirect becomes 410.">
+          Delete this QR
+        </button>
         <button type="button" id="reset" class="tertiary" title="Discard this QR's edit context and start a fresh one">
           ← Start over with a new QR
         </button>

@@ -167,7 +167,22 @@ button.secondary:hover { background: #364555; }
   padding-top: 1.25rem;
   border-top: 1px dashed var(--border);
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+button.danger {
+  background: transparent;
+  color: var(--error);
+  border: 1px solid var(--error);
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.4rem 0.9rem;
+}
+
+button.danger:hover {
+  background: var(--error-bg);
 }
 
 button.tertiary {

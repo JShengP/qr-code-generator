@@ -31,11 +31,19 @@ createForm.addEventListener("submit", async (event) => {
   const url = $("url-input").value.trim();
   if (!url) return;
 
+  // <input type="datetime-local"> yields a string like
+  // "2099-12-31T23:59" — Pydantic parses that as a naive datetime,
+  // which `_to_naive_utc` then leaves alone. Empty input => skip the
+  // field so the API treats it as "no expiry".
+  const expiresRaw = $("create-expires-input").value.trim();
+  const body = { url };
+  if (expiresRaw) body.expires_at = expiresRaw;
+
   try {
     const resp = await fetch("/api/qr/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify(body),
     });
 
     if (!resp.ok) {
@@ -58,20 +66,30 @@ editForm.addEventListener("submit", async (event) => {
   hideEditFeedback();
 
   const newUrl = $("new-url-input").value.trim();
-  if (!newUrl) return;
+  const newExpires = $("edit-expires-input").value.trim();
+
+  // At least one of the two fields must be filled.
+  if (!newUrl && !newExpires) {
+    showEditError("Enter a new URL, a new expiry, or both.");
+    return;
+  }
   if (!currentToken) {
     showEditError("Lost edit context — please create a new QR.");
     return;
   }
 
+  const patch = {};
+  if (newUrl) patch.url = newUrl;
+  if (newExpires) patch.expires_at = newExpires;
+
   // Auth is the session cookie (owner shortcut). credentials:
-  // "same-origin" makes httpx-style fetch send the cookie along.
+  // "same-origin" makes fetch send the cookie along.
   try {
     const resp = await fetch(`/api/qr/${currentToken}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ url: newUrl }),
+      body: JSON.stringify(patch),
     });
 
     if (!resp.ok) {
@@ -86,12 +104,47 @@ editForm.addEventListener("submit", async (event) => {
     // QR codes.
     $("original-url").value = data.original_url;
     $("new-url-input").value = "";
-    showEditOK(`Destination updated → ${data.original_url}`);
+    $("edit-expires-input").value = "";
+
+    const parts = [];
+    if (newUrl) parts.push(`destination → ${data.original_url}`);
+    if (newExpires) parts.push(`expires_at → ${data.expires_at ?? "(none)"}`);
+    showEditOK(`Updated: ${parts.join(", ")}`);
+
     // Re-fetch the sidebar so the listed entry shows the new
     // destination. Otherwise the next click on this token in the
     // sidebar reloads the stale `item.original_url` into the result
     // panel and the user thinks the change reverted.
     refreshMyQRs();
+  } catch (err) {
+    showEditError(`Network error: ${err.message}`);
+  }
+});
+
+// Delete button — lives in the result-footer.
+$("delete-qr").addEventListener("click", async () => {
+  if (!currentToken) return;
+  const ok = confirm(
+    "Delete this QR? Subsequent scans will return HTTP 410. The row " +
+    "stays in the database and the action is recorded in audit_logs " +
+    "(soft-delete, not erased)."
+  );
+  if (!ok) return;
+
+  try {
+    const resp = await fetch(`/api/qr/${currentToken}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({ detail: resp.statusText }));
+      showEditError(formatError(body, resp.status));
+      return;
+    }
+    // Back to a clean Create view; sidebar refreshes to drop the deleted row.
+    resetCreateView();
+    refreshMyQRs();
+    $("url-input").focus();
   } catch (err) {
     showEditError(`Network error: ${err.message}`);
   }
@@ -375,6 +428,9 @@ function resetCreateView() {
   hideEditFeedback();
   currentToken = null;
   $("url-input").value = "";
+  $("create-expires-input").value = "";
+  $("new-url-input").value = "";
+  $("edit-expires-input").value = "";
 }
 
 function showLoginOK(msg) {
