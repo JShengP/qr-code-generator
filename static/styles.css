@@ -410,7 +410,7 @@ button.tertiary:hover {
 
 #reset:hover { background: #364555; }
 
-/* Anonymous prompt ¡X sits where the Create form does for logged-in
+/* Anonymous prompt ï¿½X sits where the Create form does for logged-in
  * users. Same vertical rhythm so the page doesn't jump when auth
  * state flips on /api/auth/me load. */
 .signin-prompt {
@@ -432,22 +432,7 @@ button.tertiary:hover {
   font-size: 0.9rem;
 }
 
-/* Warning-tone alert (regenerate-token confirmation). Between
- * .alert-error (red, something failed) and .alert-ok (green, all
- * good) ¡X used for "succeeded, but you need to act on it now". */
-.alert-warn {
-  background: #3a2e1a;
-  border: 1px solid #b97a2e;
-  color: #f5d8a8;
-  margin-top: 0.75rem;
-}
-
-.alert-warn p {
-  margin: 0 0 0.5rem;
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
-#regenerate-edit-token-btn {
-  width: 100%;
-}
+/* (.alert-warn and #regenerate-edit-token-btn previously lived here
+ * for the per-QR edit_token UI; both were removed when we hid
+ * edit_token from the user-facing surface. The API still issues +
+ * accepts the token for programmatic clients.) */
