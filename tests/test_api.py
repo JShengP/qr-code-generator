@@ -219,3 +219,25 @@ def test_unknown_static_path_returns_404(client):
     """The StaticFiles catch-all must 404 paths it doesn't have."""
     r = client.get("/this-file-does-not-exist")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 — rate limit on /api/qr/create.
+# ---------------------------------------------------------------------------
+
+
+def test_create_rate_limited_after_n_requests(rate_limited_client):
+    """11th create within a minute from the same IP should be 429.
+
+    The limit is 10/minute. We loop 10 OK requests, the 11th must 429.
+    """
+    for i in range(10):
+        r = rate_limited_client.post(
+            "/api/qr/create", json={"url": f"https://example{i}.com"}
+        )
+        assert r.status_code == 200, f"req {i} unexpectedly failed: {r.status_code}"
+
+    r = rate_limited_client.post(
+        "/api/qr/create", json={"url": "https://example-overflow.com"}
+    )
+    assert r.status_code == 429

@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .database import get_db
+from .limiter import limiter
 from .models import ScanEvent, UrlMapping
 from .schemas import CreateRequest, CreateResponse, QRInfoResponse, UpdateRequest
 from .token_gen import generate_token
@@ -49,7 +50,11 @@ def _to_naive_utc(dt: datetime | None) -> datetime | None:
 
 
 @router.post("/api/qr/create", response_model=CreateResponse)
-def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def create_qr(request: Request, req: CreateRequest, db: Session = Depends(get_db)):
+    # slowapi reads the client IP off `request`; the param must be named
+    # `request` for the decorator to find it. We don't otherwise use it
+    # here — but it's required to be in the signature.
     try:
         normalized_url = validate_url(req.url)
     except ValueError as e:

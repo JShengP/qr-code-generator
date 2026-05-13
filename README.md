@@ -16,6 +16,8 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 | `GET` | `/api/qr/{token}/image` | PNG of the QR code that encodes the short URL |
 | `GET` | `/api/qr/{token}/analytics` | Total scans + scans-by-day breakdown |
 
+`POST /api/qr/create` is rate-limited to **10 requests/minute per IP** via [`slowapi`](https://github.com/laurentS/slowapi). The 11th request in the same minute gets `429 Too Many Requests` with a `Retry-After` header. Default backend is in-process memory; swap to Redis (`storage_uri='redis://...'` in `app/limiter.py`) for multi-worker deployments.
+
 ## Setup
 
 Prerequisite: **Python 3.10+**.
@@ -68,5 +70,5 @@ Hits the running server with the 8 PROMPT.md scenarios and prints PASS/FAIL per 
 - [x] Stage 4 — `feat(redirect)`: cache → DB → 404/410 fallback
 - [x] Stage 5 — pytest suite + PowerShell smoke script
 - [x] Stage 6 — static HTML frontend (vanilla JS + `fetch`)
-- [ ] Stage 7 — rate limit on create
+- [x] Stage 7 — rate limit on create (`slowapi`, 10/minute per IP)
 - [ ] Stage 8 — design-decision write-up

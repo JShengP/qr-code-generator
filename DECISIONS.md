@@ -163,3 +163,28 @@ The reference has no UI. We add `static/{index.html,app.js,styles.css}` and moun
 - Form error display understands both Pydantic's array-shaped 422 (`detail: [{loc, msg}, ...]`) and our hand-thrown string-shaped 422 (`detail: "..."`).
 
 **Path resolution:** `STATIC_DIR = Path(__file__).resolve().parent.parent / "static"` — absolute path computed from `main.py`'s location so the mount works whether uvicorn is launched from the repo root, a CI runner, or a container `WORKDIR`.
+
+---
+
+## Stage 7 — rate limit on `POST /api/qr/create`
+
+The reference has no rate limiting. We add `slowapi` and decorate only the create endpoint with `@limiter.limit("10/minute")`.
+
+**Why only `create`:** it's the only write path that does real work — DB INSERT, SHA-256 hash, Base62 encode, optional retries on collision. It's also the obvious target for abuse (flood the table with junk tokens, exhaust the Base62 namespace). The redirect path needs to stay hot and uncapped; analytics/info are read-only and cheap. PATCH and DELETE are scoped to existing tokens, so abuse cost there is bounded by what's already in the DB.
+
+**Why slowapi over rolling our own:**
+
+- 5 lines of integration vs. ~30 for a hand-rolled middleware that tracks the same things (per-IP buckets, sliding window, Retry-After header, 429 JSON body).
+- Pluggable storage backend. Default is in-process memory; swap to `storage_uri='redis://...'` for a multi-worker deployment without touching the route definitions.
+- Emits `X-RateLimit-*` response headers that monitoring tools (Datadog, Grafana) already understand.
+
+**Module layout:** `app/limiter.py` holds the singleton `Limiter`. Both `main.py` (which registers the 429 handler) and `routes.py` (which decorates the endpoint) import from it. Putting the limiter in either of those would create a circular dependency, since `main.py` imports `routes.py`.
+
+**Test isolation:** the `client` fixture disables the limiter for all tests by default (`limiter.enabled = False`). 22 of the 25 tests in this file POST several URLs in a row; without the toggle they'd start tripping the 10/min limit somewhere around test 14. The new `rate_limited_client` fixture re-enables and resets the limiter for the dedicated `test_create_rate_limited_after_n_requests` case, which fires 10 OKs followed by an 11th that must 429.
+
+**Signature wart:** the slowapi decorator reads the client IP off a parameter literally named `request: Request`. We didn't otherwise use `request` in `create_qr` — but the decorator can't find the IP otherwise, so we add it with an explanatory comment. This is a known slowapi ergonomic cost.
+
+**Known limitations:**
+
+- The default in-memory storage is per-process. Two uvicorn workers will track separate buckets, so a determined attacker bypasses the limit by reconnecting twice as fast. Production fix is `storage_uri='redis://...'`.
+- `get_remote_address` reads `request.client.host`, which behind a reverse proxy is the proxy's IP, not the user's. Behind Nginx/CloudFront we'd need to read `X-Forwarded-For` (configurable via slowapi's `key_func`).
