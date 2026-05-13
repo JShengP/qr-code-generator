@@ -431,3 +431,23 @@ button.tertiary:hover {
   padding: 0.55rem 1.5rem;
   font-size: 0.9rem;
 }
+
+/* Warning-tone alert (regenerate-token confirmation). Between
+ * .alert-error (red, something failed) and .alert-ok (green, all
+ * good) ¡X used for "succeeded, but you need to act on it now". */
+.alert-warn {
+  background: #3a2e1a;
+  border: 1px solid #b97a2e;
+  color: #f5d8a8;
+  margin-top: 0.75rem;
+}
+
+.alert-warn p {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+#regenerate-edit-token-btn {
+  width: 100%;
+}

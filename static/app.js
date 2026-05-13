@@ -162,6 +162,11 @@ function renderResult(data) {
   currentToken = data.token;
   currentEditToken = data.edit_token;
   editTokenCopied = false;  // fresh QR; user hasn't copied yet
+
+  // Show the create-time edit-token field; hide the regenerate flow.
+  $("edit-token-field").hidden = false;
+  $("edit-token-regenerate-field").hidden = true;
+
   createForm.hidden = true;
   resultPanel.hidden = false;
   hideEditFeedback();
@@ -311,16 +316,24 @@ async function refreshMyQRs() {
 
 function openOwnedQR(item) {
   // Render the result panel against an existing owned QR. The
-  // edit_token field is left empty + hidden because, for owners,
-  // the API accepts the session cookie alone.
+  // plaintext edit_token is not available here — the server only
+  // returns it once at create time. We show the regenerate path
+  // instead of a placeholder-only field.
   $("qr-image").src = `/api/qr/${item.token}/image`;
   $("short-url").value = item.short_url;
   $("original-url").value = item.original_url;
   $("token").value = item.token;
-  $("edit-token").value = "(owned by you — session cookie is the credential)";
   currentToken = item.token;
   currentEditToken = null;  // owner shortcut, no bearer needed
   editTokenCopied = true;   // suppress the "you didn't save the token" prompt
+
+  // Swap the edit-token field: hide the create-time one, show the
+  // regenerate-from-here flow.
+  $("edit-token-field").hidden = true;
+  $("edit-token-regenerate-field").hidden = false;
+  $("regenerate-output").hidden = true;
+  $("regenerate-error").hidden = true;
+
   $("create-form").hidden = true;
   $("result").hidden = false;
   hideEditFeedback();
@@ -411,6 +424,40 @@ function resetCreateView() {
   editTokenCopied = false;
   $("url-input").value = "";
 }
+
+// ---------------------------------------------------------------------
+// Regenerate edit_token from the sidebar-opened result panel.
+// ---------------------------------------------------------------------
+
+$("regenerate-edit-token-btn").addEventListener("click", async () => {
+  if (!currentToken) return;
+  $("regenerate-error").hidden = true;
+  $("regenerate-output").hidden = true;
+
+  try {
+    const resp = await fetch(`/api/qr/${currentToken}/rotate-edit-token`, {
+      method: "POST",
+      credentials: "same-origin",
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({ detail: resp.statusText }));
+      $("regenerate-error").textContent = formatError(body, resp.status);
+      $("regenerate-error").hidden = false;
+      return;
+    }
+    const data = await resp.json();
+    // From here on, the in-memory bearer matches the latest hash on
+    // the server — anonymous PATCH/DELETE flows from this tab using
+    // currentEditToken would still work even if the session expired.
+    currentEditToken = data.edit_token;
+    editTokenCopied = false;
+    $("new-edit-token").value = data.edit_token;
+    $("regenerate-output").hidden = false;
+  } catch (err) {
+    $("regenerate-error").textContent = `Network error: ${err.message}`;
+    $("regenerate-error").hidden = false;
+  }
+});
 
 function showLoginOK(msg) {
   loginStatus.textContent = msg;
