@@ -126,51 +126,12 @@
             <input id="token" readonly />
           </div>
         </div>
-        <!-- Shown only right after a fresh Create — the only time the
-             API ever returns the plaintext edit_token. -->
-        <div class="field" id="edit-token-field">
-          <label>
-            Edit token
-            <span class="hint">⚠ shown ONCE — save it if you'll close this tab</span>
-          </label>
-          <div class="row">
-            <input id="edit-token" readonly />
-            <button type="button" class="copy" data-target="edit-token">Copy</button>
-          </div>
-        </div>
-
-        <!-- Shown when opening an owned QR from the sidebar. We don't
-             have the plaintext edit_token anymore (server never re-issues
-             it), so we offer a regenerate flow instead. The session
-             cookie is what authorizes the rotate call. -->
-        <div class="field" id="edit-token-regenerate-field" hidden>
-          <label>
-            Edit token
-            <span class="hint">
-              The session cookie is enough to edit this QR from here. Only
-              regenerate if you need an `Authorization: Bearer` token for
-              a script or another device — the old one (if any) will stop
-              working.
-            </span>
-          </label>
-          <div class="row">
-            <button type="button" id="regenerate-edit-token-btn" class="secondary">
-              Regenerate edit token
-            </button>
-          </div>
-          <!-- Output area: shows the new plaintext after a successful rotate. -->
-          <div id="regenerate-output" class="alert alert-warn" hidden>
-            <p>
-              <strong>⚠ Shown ONCE.</strong> Copy now — we never display it again.
-              Any previously-issued edit token for this QR is now invalid.
-            </p>
-            <div class="row">
-              <input id="new-edit-token" readonly />
-              <button type="button" class="copy" data-target="new-edit-token">Copy</button>
-            </div>
-          </div>
-          <div id="regenerate-error" class="alert alert-error" hidden></div>
-        </div>
+        <!-- edit_token is not exposed in the UI on purpose. The API
+             still issues it (CreateResponse.edit_token) and still
+             accepts `Authorization: Bearer <edit_token>` on PATCH /
+             DELETE / rotate, so scripted / cross-device clients can
+             use it via curl. For browser users the session cookie
+             is the credential — see DECISIONS.md. -->
       </div>
 
       <hr class="divider" />
