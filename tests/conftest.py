@@ -40,6 +40,11 @@ def client():
 
     app.dependency_overrides[get_db] = _override_get_db
     routes_module.redirect_cache.clear()
+    routes_module._scan_last_seen.clear()
+    # Disable per-(token, ip) scan dedup for the default fixture so that
+    # tests which hit `/r/{token}` multiple times in a tight loop see
+    # every scan counted. The dedicated dedup test re-enables it.
+    routes_module.SCAN_DEDUP_WINDOW = 0.0
 
     # Disable rate limiting for the bulk of tests — most of them post
     # many URLs in a tight loop and would otherwise trip the bucket.
@@ -60,6 +65,9 @@ def client():
         client.close()
         app.dependency_overrides.clear()
         routes_module.redirect_cache.clear()
+        routes_module._scan_last_seen.clear()
+        routes_module.SCAN_DEDUP_WINDOW = 1.0  # restore prod default
+        routes_module.REDIRECT_RATE_LIMIT = "300/minute"  # restore prod default
         limiter.enabled = True
         limiter.reset()
         engine.dispose()

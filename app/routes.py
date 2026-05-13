@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import io
+import time
 from datetime import datetime, timezone
 
 import qrcode
@@ -24,6 +25,24 @@ router = APIRouter()
 redirect_cache: dict[str, tuple[str, datetime | None]] = {}
 
 BASE_URL = "http://localhost:8000"
+
+# Per-(token, ip) timestamp of the most recent scan we recorded. Used to
+# dedupe rapid-fire refreshes from the same client so a single attacker
+# can't bloat `scan_events` from one IP. The redirect itself still serves
+# 302 — only the DB INSERT is skipped on hit.
+_scan_last_seen: dict[tuple[str, str], float] = {}
+SCAN_DEDUP_WINDOW = 1.0  # seconds; tests monkey-patch to 0.0 to disable
+
+# Per-IP rate limit for the redirect endpoint. Resolved via callable so
+# tests can lower it without re-importing. 300/min ≈ 5 req/sec — high
+# enough to be transparent for legitimate NAT'd traffic, low enough to
+# meaningfully cap brute-force flood. Read-only writes (the scan event)
+# are further bounded by the per-(token, ip) dedup window above.
+REDIRECT_RATE_LIMIT = "300/minute"
+
+
+def _redirect_rate_limit() -> str:
+    return REDIRECT_RATE_LIMIT
 
 
 def _now_naive() -> datetime:
@@ -91,6 +110,7 @@ def create_qr(request: Request, req: CreateRequest, db: Session = Depends(get_db
 
 
 @router.get("/r/{token}")
+@limiter.limit(_redirect_rate_limit)
 def redirect(token: str, request: Request, db: Session = Depends(get_db)):
     """Cache → DB → 404/410. The hottest path in the system.
 
@@ -253,10 +273,34 @@ def _require_edit_token(mapping: UrlMapping, authorization: str | None) -> None:
 
 
 def _record_scan(token: str, request: Request, db: Session):
+    """Insert one ScanEvent, with per-(token, ip) burst dedup.
+
+    Records every scan when `SCAN_DEDUP_WINDOW <= 0`; otherwise skips
+    the INSERT if the same `(token, ip)` pair already recorded a scan
+    within the window. The redirect handler still 302s either way —
+    this only protects the DB from refresh-spam.
+    """
+    ip = request.client.host if request.client else "unknown"
+
+    if SCAN_DEDUP_WINDOW > 0:
+        now = time.monotonic()
+        key = (token, ip)
+        last = _scan_last_seen.get(key)
+        if last is not None and (now - last) < SCAN_DEDUP_WINDOW:
+            return
+        _scan_last_seen[key] = now
+        # Lazy GC: when the dict grows large, drop entries older than
+        # 30× the dedup window. Bounds memory without a background task.
+        if len(_scan_last_seen) > 5000:
+            cutoff = now - SCAN_DEDUP_WINDOW * 30
+            stale = [k for k, t in _scan_last_seen.items() if t < cutoff]
+            for k in stale:
+                _scan_last_seen.pop(k, None)
+
     event = ScanEvent(
         token=token,
-        user_agent=request.headers.get("user-agent"),
-        ip_address=request.client.host if request.client else None,
+        user_agent=(request.headers.get("user-agent") or "")[:500] or None,
+        ip_address=ip if ip != "unknown" else None,
     )
     db.add(event)
     db.commit()

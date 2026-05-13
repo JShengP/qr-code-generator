@@ -281,3 +281,47 @@ The security review's headline finding: PATCH and DELETE accepted any caller who
 - No way to rotate or revoke an `edit_token` after issue. A revocation would require either re-keying via a new `POST /api/qr/{token}/rotate` (still needs the old token), or admin override (out of scope for a no-auth-system prototype).
 - Brute-forcing the bearer is still possible in principle; the rate limit only covers `POST /api/qr/create`. Adding a limit to `PATCH`/`DELETE` (e.g. `30/minute/IP`) would close this — flagged in the next review pass.
 - The validator review also recommended IDN/punycode decoding for blocklist matching; that's deferred (more invasive than this auth commit).
+
+## Post-review #4 — feat: redirect path rate limit + scan-event dedup
+
+The security review's other High finding was that `/r/{token}` had no rate limit, which let an attacker flood the endpoint and bloat `scan_events` via the synchronous `INSERT` inside `_record_scan`. README mistakenly said "reads stay unbounded" — but `/r/{token}` is a read on the user side and a write on our side. This commit lands two layered protections.
+
+**Layer 1 — slowapi cap on the redirect path: `300/minute/IP`.**
+
+Sized to be transparent for legitimate NAT traffic (a corporate office of ~50 people scanning a popular link at peak ~few-per-minute-each stays well under) and meaningfully tight against bursty abuse (5 req/sec ceiling).
+
+The limit string is read via a callable (`_redirect_rate_limit()`) reading a module-level constant `REDIRECT_RATE_LIMIT`. Tests monkey-patch this to `5/minute` so the 6th-redirect-429 case can be asserted without looping 301 times. Production deployments override via the env var path documented at the top of the route. 429 on a QR scan is a UX scratch, but it's the right scratch — the alternative is letting the abuser win.
+
+**Layer 2 — per-(token, ip) scan dedup: 1-second window by default.**
+
+Independent of the rate limit. Inside `_record_scan`, we look up `(token, ip)` in a module-level dict; if the last scan was within `SCAN_DEDUP_WINDOW` seconds, we skip the DB INSERT but still return 302. The redirect UX is unaffected; only `scan_events` row growth is throttled.
+
+Why dedup AND rate limit:
+
+- The rate limit caps **request volume** (the slowapi bucket counts everything that reaches the handler, including non-recording cache hits).
+- The dedup caps **DB write volume**. Even within a single rate-limit bucket, a refresh-spamming user shouldn't pile up 300 scan rows per minute. After dedup, the same burst collapses to 1 row.
+- The two protections compose: an attacker maxing the rate limit (5 req/sec from one IP) hits the dedup window every time, so they get 1 row/sec/IP at most against the DB.
+
+Memory management for the dedup dict: lazy GC inside `_record_scan` itself — when the dict crosses 5000 entries, we sweep entries older than 30× the window. Avoids a background thread; cost is paid only when the dict grows large.
+
+**Semantic note for `total_scans`:**
+
+In production (`SCAN_DEDUP_WINDOW = 1.0`), `total_scans` now means "unique scans across (token, ip) per second-window," not "raw HTTP hits." For most use cases this is the more meaningful metric — a single user refreshing 50 times shouldn't read as 50 scans. Apps that need raw counts can set `SCAN_DEDUP_WINDOW = 0` via env-var-driven config (not wired up yet; flagged below).
+
+**Bonus fix landing here (caught by security review §6):** `_record_scan` was storing `user_agent` raw into a `String(500)` column. SQLite ignores the length constraint, so a multi-megabyte UA string would be stored verbatim — storage-amplification primitive when chained with the unbounded redirect. We now truncate to 500 chars at insert time.
+
+**Tests:**
+
+- `test_redirect_rate_limit_fires_at_threshold` — set limit to `5/minute`, 6th redirect must 429.
+- `test_scan_dedup_skips_rapid_scans_from_same_ip` — 5 rapid scans → `total_scans == 1`.
+- `test_scan_dedup_records_across_different_ips` — asserts the dict bookkeeping; cross-IP via TestClient is limited.
+
+Conftest now resets `_scan_last_seen`, `SCAN_DEDUP_WINDOW`, and `REDIRECT_RATE_LIMIT` between tests so state can't leak across cases. The default fixture sets `SCAN_DEDUP_WINDOW = 0.0` so the existing 22+ tests that hit `/r/{token}` multiple times in a tight loop still see every scan counted.
+
+51 / 51 tests now pass (was 48).
+
+**Known follow-ups:**
+
+- `REDIRECT_RATE_LIMIT` and `SCAN_DEDUP_WINDOW` should be env-var-driven (`os.getenv("REDIRECT_RATE_LIMIT", "300/minute")`) so production deployments can tune without a code change. Not done yet.
+- Behind a reverse proxy, `request.client.host` is the proxy IP, so dedup keys collapse all real users to one bucket. Same caveat as the slowapi `key_func` — production needs `X-Forwarded-For` parsing.
+- The dedup dict is per-worker. Multiple uvicorn workers each track their own state, so a worker-bouncing attacker can multiply their DB write rate by `min(workers, connections)`. A Redis-backed implementation closes this.

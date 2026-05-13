@@ -24,7 +24,14 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 | `GET` | `/api/qr/{token}/image` | PNG of the QR code that encodes the short URL |
 | `GET` | `/api/qr/{token}/analytics` | Total scans + scans-by-day breakdown |
 
-`POST /api/qr/create` is rate-limited to **10 requests/minute per IP** via [`slowapi`](https://github.com/laurentS/slowapi). The 11th request in the same minute gets `429 Too Many Requests` with a `Retry-After` header. Default backend is in-process memory; swap to Redis (`storage_uri='redis://...'` in `app/limiter.py`) for multi-worker deployments.
+### Rate limiting
+
+| Endpoint | Limit | Notes |
+|---|---|---|
+| `POST /api/qr/create` | **10 / min / IP** | Hardest path: hash + retry + DB write. |
+| `GET /r/{token}` | **300 / min / IP** | Plus per-(token, ip) 1-second dedup on the scan-event INSERT, so refresh-spam can't bloat `scan_events`. |
+
+Both via [`slowapi`](https://github.com/laurentS/slowapi). 11th create / 301st redirect within the window returns `429 Too Many Requests` with `Retry-After`. Default backend is in-process memory; swap to Redis (`storage_uri='redis://...'` in `app/limiter.py`) for multi-worker deployments.
 
 **`PATCH` and `DELETE` require auth.** The create response includes a one-time `edit_token` (~256 bits, returned only on creation); subsequent PATCH/DELETE calls must include `Authorization: Bearer <edit_token>`. The DB stores only the SHA-256 hash. Losing the `edit_token` means losing the ability to edit the link.
 
