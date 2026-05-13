@@ -30,6 +30,10 @@
 
     <section id="result" hidden>
       <img id="qr-image" alt="QR code for the short link" />
+      <p class="subtitle subtle">
+        Print this QR. The destination can be changed below without
+        re-printing — the encoded short URL never changes.
+      </p>
       <div class="result-fields">
         <div class="field">
           <label>Short URL</label>
@@ -39,7 +43,7 @@
           </div>
         </div>
         <div class="field">
-          <label>Original URL <span class="hint">(after normalization)</span></label>
+          <label>Current destination <span class="hint">(where it 302s to right now)</span></label>
           <div class="row">
             <input id="original-url" readonly />
           </div>
@@ -53,7 +57,7 @@
         <div class="field">
           <label>
             Edit token
-            <span class="hint">⚠ shown ONCE — save it to PATCH/DELETE later</span>
+            <span class="hint">⚠ shown ONCE — save it if you'll close this tab</span>
           </label>
           <div class="row">
             <input id="edit-token" readonly />
@@ -61,7 +65,30 @@
           </div>
         </div>
       </div>
-      <button type="button" id="reset">Create another</button>
+
+      <hr class="divider" />
+
+      <form id="edit-form" novalidate>
+        <label for="new-url-input">Change destination</label>
+        <p class="hint">
+          Same QR, new target. The short URL is fixed once printed; updating
+          here re-points it at a new destination on the next scan.
+        </p>
+        <div class="row">
+          <input
+            id="new-url-input"
+            type="url"
+            placeholder="https://new-destination.example/"
+            required
+          />
+          <button type="submit">Update</button>
+        </div>
+      </form>
+
+      <div id="edit-status" class="alert alert-ok" hidden></div>
+      <div id="edit-error" class="alert alert-error" hidden></div>
+
+      <button type="button" id="reset" class="secondary">Create another QR</button>
     </section>
   </main>
 

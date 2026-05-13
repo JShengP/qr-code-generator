@@ -120,6 +120,40 @@ button.copy.copied { background: #2e7d57; color: #d8f5e6; }
   color: var(--error);
 }
 
+.alert-ok {
+  background: #1f3a2a;
+  border: 1px solid #2e7d57;
+  color: #d8f5e6;
+}
+
+.subtle {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin: 0 0 1rem;
+  text-align: center;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5rem 0;
+}
+
+button.secondary {
+  background: var(--border);
+  color: var(--text);
+  margin-top: 1rem;
+  width: 100%;
+}
+
+button.secondary:hover { background: #364555; }
+
+#edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 #result {
   margin-top: 1.5rem;
   padding-top: 1.5rem;
