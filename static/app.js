@@ -24,6 +24,12 @@ const editError = $("edit-error");
 let currentToken = null;
 let currentEditToken = null;
 
+// Whether the user has taken the action to save the edit_token via the
+// Copy button. Used to decide whether to nudge them with a confirm()
+// before they wipe the edit context by clicking "Start over." If they
+// already copied it, we trust they have it and skip the prompt.
+let editTokenCopied = false;
+
 createForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   hideError();
@@ -91,6 +97,17 @@ editForm.addEventListener("submit", async (event) => {
 });
 
 $("reset").addEventListener("click", () => {
+  // The edit_token only exists in memory and the only place it's
+  // *visible* on screen is in the readonly input. If the user hasn't
+  // copied it yet, "Start over" is destructive — they lose the
+  // ability to edit this QR forever. Nudge them, but only once.
+  if (!editTokenCopied) {
+    const proceed = confirm(
+      "You haven't copied the edit token yet. Without it, this QR " +
+      "can't be edited later. Start over anyway?"
+    );
+    if (!proceed) return;
+  }
   resultPanel.hidden = true;
   createForm.hidden = false;
   $("url-input").value = "";
@@ -98,6 +115,7 @@ $("reset").addEventListener("click", () => {
   hideEditFeedback();
   currentToken = null;
   currentEditToken = null;
+  editTokenCopied = false;
 });
 
 // Copy buttons (delegated).
@@ -118,6 +136,11 @@ document.addEventListener("click", async (event) => {
     target.select();
     document.execCommand("copy"); // legacy fallback
   }
+  // Track whether the edit_token specifically was copied — that's the
+  // signal we use to skip the "lose edit context" warning on reset.
+  if (btn.dataset.target === "edit-token") {
+    editTokenCopied = true;
+  }
 });
 
 function renderResult(data) {
@@ -129,6 +152,7 @@ function renderResult(data) {
   $("edit-token").value = data.edit_token;
   currentToken = data.token;
   currentEditToken = data.edit_token;
+  editTokenCopied = false;  // fresh QR; user hasn't copied yet
   createForm.hidden = true;
   resultPanel.hidden = false;
   hideEditFeedback();

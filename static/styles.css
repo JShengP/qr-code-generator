@@ -148,6 +148,29 @@ button.secondary {
 
 button.secondary:hover { background: #364555; }
 
+.result-footer {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  justify-content: center;
+}
+
+button.tertiary {
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 400;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border);
+}
+
+button.tertiary:hover {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
 #edit-form {
   display: flex;
   flex-direction: column;
