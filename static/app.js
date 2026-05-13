@@ -101,6 +101,11 @@ editForm.addEventListener("submit", async (event) => {
     $("original-url").value = data.original_url;
     $("new-url-input").value = "";
     showEditOK(`Destination updated → ${data.original_url}`);
+    // Re-fetch the sidebar so the listed entry shows the new
+    // destination. Otherwise the next click on this token in the
+    // sidebar reloads the stale `item.original_url` into the result
+    // panel and the user thinks the change reverted.
+    refreshMyQRs();
   } catch (err) {
     showEditError(`Network error: ${err.message}`);
   }
