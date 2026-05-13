@@ -32,3 +32,10 @@ class QRInfoResponse(BaseModel):
 class UpdateRequest(BaseModel):
     url: str | None = None
     expires_at: datetime | None = None
+
+
+class RotateEditTokenResponse(BaseModel):
+    # The new plaintext edit token. Returned only at rotation time; the
+    # DB stores only its SHA-256 hash. The previous token is no longer
+    # valid the instant this response is produced.
+    edit_token: str

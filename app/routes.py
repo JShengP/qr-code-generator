@@ -16,7 +16,13 @@ from . import config
 from .database import get_db
 from .limiter import limiter
 from .models import ScanEvent, UrlMapping
-from .schemas import CreateRequest, CreateResponse, QRInfoResponse, UpdateRequest
+from .schemas import (
+    CreateRequest,
+    CreateResponse,
+    QRInfoResponse,
+    RotateEditTokenResponse,
+    UpdateRequest,
+)
 from .token_gen import generate_edit_token, generate_token
 from .url_validator import validate_url
 
@@ -270,6 +276,41 @@ def update_qr(
     db.commit()
     db.refresh(mapping)
     return mapping
+
+
+@router.post(
+    "/api/qr/{token}/rotate-edit-token", response_model=RotateEditTokenResponse
+)
+@limiter.limit(_mutation_rate_limit)
+def rotate_edit_token_route(
+    token: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Issue a fresh edit_token and invalidate the old one.
+
+    Use when an edit_token has been leaked or the owner wants to
+    proactively rotate credentials. The old token stops working the
+    instant this commits; the new token must be presented as
+    `Authorization: Bearer ...` on subsequent PATCH/DELETE/rotate
+    calls.
+
+    Authentication is the *current* edit_token — there's no admin
+    override and no recovery flow. If a caller has already lost the
+    token, the link is permanently un-editable. That matches the
+    "credential is shown once at create time" contract; recovery
+    would require a separate identity system (email, OAuth) which is
+    out of scope.
+    """
+    mapping = _get_mapping_or_404(token, db)
+    _require_edit_token(mapping, authorization)
+
+    new_plain, new_hash = generate_edit_token()
+    mapping.edit_token_hash = new_hash
+    db.commit()
+    # `updated_at` auto-bumps via the SQLAlchemy onupdate trigger.
+    return RotateEditTokenResponse(edit_token=new_plain)
 
 
 @router.delete("/api/qr/{token}")

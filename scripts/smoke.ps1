@@ -119,6 +119,25 @@ $createTz = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/qr/create" `
 $r10 = Get-StatusAndLocation "$BaseUrl/r/$($createTz.token)"
 Assert-Eq '10. Z-suffix expires_at does not crash redirect' $r10.Status 302
 
+# ----- 11. edit_token rotation invalidates the old token --------------------
+$createR = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/qr/create" `
+    -ContentType 'application/json' -Body '{"url": "https://example.com"}'
+$rotated = Invoke-RestMethod -Method Post `
+    -Uri "$BaseUrl/api/qr/$($createR.token)/rotate-edit-token" `
+    -Headers @{ 'Authorization' = "Bearer $($createR.edit_token)" }
+Assert-Eq '11. rotate returns a different edit_token' ($rotated.edit_token -ne $createR.edit_token) $true
+# Old token must now fail
+try {
+    Invoke-RestMethod -Method Patch -Uri "$BaseUrl/api/qr/$($createR.token)" `
+        -ContentType 'application/json' `
+        -Headers @{ 'Authorization' = "Bearer $($createR.edit_token)" } `
+        -Body '{"url": "https://hijack.com"}' -ErrorAction Stop | Out-Null
+    Assert-Eq '    old edit_token rejected after rotation' 'unexpected-success' '401'
+} catch {
+    $code = [int]$_.Exception.Response.StatusCode
+    Assert-Eq '    old edit_token rejected after rotation' $code 401
+}
+
 Write-Host ''
 if ($script:fails -eq 0) {
     Write-Host "All $script:passes assertions passed." -ForegroundColor Green

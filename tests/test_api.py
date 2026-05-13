@@ -420,6 +420,92 @@ def test_edit_tokens_isolated_between_tokens(client):
     assert r.status_code == 401
 
 
+# ---------------------------------------------------------------------------
+# Edit-token rotation.
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_edit_token_returns_new_token_and_invalidates_old(client):
+    token, old_edit_token, _ = _create(client)
+
+    # Rotate using the old token
+    r = client.post(
+        f"/api/qr/{token}/rotate-edit-token", headers=_auth(old_edit_token)
+    )
+    assert r.status_code == 200
+    new_edit_token = r.json()["edit_token"]
+    assert new_edit_token != old_edit_token
+    assert len(new_edit_token) >= 32
+
+    # Old token must no longer authenticate PATCH
+    r = client.patch(
+        f"/api/qr/{token}", json={"url": "https://new.com"}, headers=_auth(old_edit_token)
+    )
+    assert r.status_code == 401
+
+    # New token works
+    r = client.patch(
+        f"/api/qr/{token}", json={"url": "https://new.com"}, headers=_auth(new_edit_token)
+    )
+    assert r.status_code == 200
+
+
+def test_rotate_without_auth_returns_401(client):
+    token, _et, _ = _create(client)
+    r = client.post(f"/api/qr/{token}/rotate-edit-token")
+    assert r.status_code == 401
+
+
+def test_rotate_with_wrong_token_returns_401_and_old_still_valid(client):
+    token, old_edit_token, _ = _create(client)
+    r = client.post(
+        f"/api/qr/{token}/rotate-edit-token",
+        headers={"Authorization": "Bearer attacker-bearer"},
+    )
+    assert r.status_code == 401
+
+    # Old token still works — a failed rotate must NOT partially mutate state
+    r = client.patch(
+        f"/api/qr/{token}",
+        json={"url": "https://still-works.com"},
+        headers=_auth(old_edit_token),
+    )
+    assert r.status_code == 200
+
+
+def test_rotate_unknown_token_returns_404(client):
+    """Rotation on an unknown token is 404, not a leak about why."""
+    r = client.post(
+        "/api/qr/NOPE123/rotate-edit-token",
+        headers={"Authorization": "Bearer anything"},
+    )
+    assert r.status_code == 404
+
+
+def test_chained_rotation_works(client):
+    """Two rotations in a row: each new token can rotate again."""
+    token, t1, _ = _create(client)
+
+    r = client.post(f"/api/qr/{token}/rotate-edit-token", headers=_auth(t1))
+    assert r.status_code == 200
+    t2 = r.json()["edit_token"]
+
+    r = client.post(f"/api/qr/{token}/rotate-edit-token", headers=_auth(t2))
+    assert r.status_code == 200
+    t3 = r.json()["edit_token"]
+
+    # Only the latest one authenticates
+    assert client.patch(
+        f"/api/qr/{token}", json={"url": "https://x.com"}, headers=_auth(t1)
+    ).status_code == 401
+    assert client.patch(
+        f"/api/qr/{token}", json={"url": "https://x.com"}, headers=_auth(t2)
+    ).status_code == 401
+    assert client.patch(
+        f"/api/qr/{token}", json={"url": "https://x.com"}, headers=_auth(t3)
+    ).status_code == 200
+
+
 def test_crlf_in_url_rejected(client):
     """CRLF must not be smuggled into the URL — it would land in Location."""
     for url in [

@@ -23,6 +23,7 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 | `DELETE` | `/api/qr/{token}` | Soft delete; subsequent redirects return 410 |
 | `GET` | `/api/qr/{token}/image` | PNG of the QR code that encodes the short URL |
 | `GET` | `/api/qr/{token}/analytics` | Total scans + scans-by-day breakdown |
+| `POST` | `/api/qr/{token}/rotate-edit-token` | Issue a fresh `edit_token`; old one is invalidated. |
 
 ### Rate limiting
 
