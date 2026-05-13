@@ -409,3 +409,25 @@ button.tertiary:hover {
 }
 
 #reset:hover { background: #364555; }
+
+/* Anonymous prompt ¡X sits where the Create form does for logged-in
+ * users. Same vertical rhythm so the page doesn't jump when auth
+ * state flips on /api/auth/me load. */
+.signin-prompt {
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.signin-prompt p {
+  margin: 0 0 1rem;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
+#signin-prompt-btn {
+  padding: 0.55rem 1.5rem;
+  font-size: 0.9rem;
+}

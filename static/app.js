@@ -248,11 +248,18 @@ async function refreshAuthState() {
       authAnon.hidden = true;
       authSignedIn.hidden = false;
       $("auth-email").textContent = data.user.email;
+      // Reveal the Create form; hide the anon prompt.
+      $("create-form").hidden = false;
+      $("signin-prompt").hidden = true;
       await refreshMyQRs();
     } else {
       authAnon.hidden = false;
       authSignedIn.hidden = true;
       $("my-qrs").hidden = true;
+      // API now requires auth to create — show the prompt instead of
+      // a Create form that would 401 the moment a user clicked it.
+      $("create-form").hidden = true;
+      $("signin-prompt").hidden = false;
     }
   } catch {
     // If /me fails (network down etc.), show the anon UI as a safe
@@ -260,6 +267,8 @@ async function refreshAuthState() {
     authAnon.hidden = false;
     authSignedIn.hidden = true;
     $("my-qrs").hidden = true;
+    $("create-form").hidden = true;
+    $("signin-prompt").hidden = false;
   }
 }
 
@@ -317,11 +326,14 @@ function openOwnedQR(item) {
   hideEditFeedback();
 }
 
-$("login-btn").addEventListener("click", () => {
+$("login-btn").addEventListener("click", openLoginModal);
+$("signin-prompt-btn").addEventListener("click", openLoginModal);
+
+function openLoginModal() {
   loginModal.hidden = false;
   $("login-email").focus();
   hideLoginFeedback();
-});
+}
 
 $("login-cancel").addEventListener("click", () => {
   loginModal.hidden = true;
@@ -387,12 +399,14 @@ $("logout-btn").addEventListener("click", async () => {
 
 function resetCreateView() {
   resultPanel.hidden = true;
-  createForm.hidden = false;
-  $("url-input").value = "";
+  // Whether to reveal the create form is decided by refreshAuthState
+  // based on /me. We hide the result panel and clear state; the auth
+  // refresh that runs after sign-out decides what the user sees next.
   hideEditFeedback();
   currentToken = null;
   currentEditToken = null;
   editTokenCopied = false;
+  $("url-input").value = "";
 }
 
 function showLoginOK(msg) {

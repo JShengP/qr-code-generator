@@ -77,7 +77,15 @@
       <p class="subtitle">Paste a URL → get a short link + scannable QR code.</p>
     </header>
 
-    <form id="create-form" novalidate>
+    <!-- Anonymous-only prompt — replaces the Create form when nobody
+         is signed in. The Sign-in button below opens the same modal
+         as the one in the auth bar. -->
+    <div id="signin-prompt" class="signin-prompt" hidden>
+      <p>Sign in to create QR codes you can manage from anywhere.</p>
+      <button type="button" id="signin-prompt-btn">Sign in to create</button>
+    </div>
+
+    <form id="create-form" novalidate hidden>
       <label for="url-input">URL to shorten</label>
       <input
         id="url-input"
