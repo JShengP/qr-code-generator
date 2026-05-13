@@ -10,9 +10,14 @@ no signing, no claims. The DB lookup is one indexed-PK SELECT per
 request; revocation is one DELETE. We pay one query for a clean
 revocation story instead of running a JWT denylist alongside the
 signing key.
-"""
-from __future__ import annotations
 
+NOTE: we deliberately don't use `from __future__ import annotations`
+here — when this dependency is wrapped in FastAPI's `Depends(...)`
+and consumed by an endpoint that's ALSO wrapped by slowapi, the
+stringified annotations defeat FastAPI's parameter resolution and
+the `user` parameter silently arrives as the literal class instead
+of an instance. Same root cause as the auth_routes.py note.
+"""
 from fastapi import Cookie, Depends
 from sqlalchemy.orm import Session
 

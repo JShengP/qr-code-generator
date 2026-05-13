@@ -210,6 +210,65 @@ button.tertiary:hover {
   font-weight: 500;
 }
 
+/* My QRs sidebar */
+.my-qrs {
+  position: fixed;
+  top: 5rem;
+  left: 1rem;
+  width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  max-height: calc(100vh - 7rem);
+  overflow-y: auto;
+}
+
+.my-qrs h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
+.my-qrs ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.my-qrs li {
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.my-qrs li:hover { border-color: var(--accent); }
+
+.my-qrs li .token {
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.my-qrs li .destination {
+  display: block;
+  color: var(--text-dim);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .my-qrs { position: static; width: auto; margin: 1rem; }
+}
+
 /* Modal */
 .modal {
   position: fixed;

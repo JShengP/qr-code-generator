@@ -29,6 +29,13 @@ class UrlMapping(Base):
     # created before this column existed remain readable; they're
     # treated as un-editable.
     edit_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # FK to the User who created this mapping, if any. Nullable so the
+    # original anonymous create flow keeps working: a logged-out user
+    # still gets a token + edit_token and can edit via the bearer header,
+    # they just don't have a "My QRs" list. Logged-in users get both.
+    owner_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utc_now_naive, onupdate=_utc_now_naive

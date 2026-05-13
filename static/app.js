@@ -55,6 +55,8 @@ createForm.addEventListener("submit", async (event) => {
 
     const data = await resp.json();
     renderResult(data);
+    // Refresh the sidebar so a newly-owned create appears immediately.
+    refreshMyQRs();
   } catch (err) {
     showError(`Network error: ${err.message}`);
   }
@@ -66,18 +68,23 @@ editForm.addEventListener("submit", async (event) => {
 
   const newUrl = $("new-url-input").value.trim();
   if (!newUrl) return;
-  if (!currentToken || !currentEditToken) {
+  if (!currentToken) {
     showEditError("Lost edit context — please create a new QR.");
     return;
+  }
+
+  // For owners we have no edit_token in memory but the session cookie
+  // is the credential. For anonymous edits we still need the bearer.
+  const headers = { "Content-Type": "application/json" };
+  if (currentEditToken) {
+    headers["Authorization"] = `Bearer ${currentEditToken}`;
   }
 
   try {
     const resp = await fetch(`/api/qr/${currentToken}`, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${currentEditToken}`,
-      },
+      headers,
+      credentials: "same-origin",
       body: JSON.stringify({ url: newUrl }),
     });
 
@@ -221,16 +228,73 @@ async function refreshAuthState() {
       authAnon.hidden = true;
       authSignedIn.hidden = false;
       $("auth-email").textContent = data.user.email;
+      await refreshMyQRs();
     } else {
       authAnon.hidden = false;
       authSignedIn.hidden = true;
+      $("my-qrs").hidden = true;
     }
   } catch {
     // If /me fails (network down etc.), show the anon UI as a safe
     // default — better to invite sign-in than to hide it.
     authAnon.hidden = false;
     authSignedIn.hidden = true;
+    $("my-qrs").hidden = true;
   }
+}
+
+async function refreshMyQRs() {
+  const sidebar = $("my-qrs");
+  const list = $("my-qrs-list");
+  const empty = $("my-qrs-empty");
+  try {
+    const r = await fetch("/api/qr/mine", { credentials: "same-origin" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    sidebar.hidden = false;
+    list.innerHTML = "";
+    if (data.items.length === 0) {
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    for (const item of data.items) {
+      const li = document.createElement("li");
+      const tokenSpan = document.createElement("span");
+      tokenSpan.className = "token";
+      tokenSpan.textContent = item.token;
+      const destSpan = document.createElement("span");
+      destSpan.className = "destination";
+      destSpan.textContent = item.original_url;
+      li.appendChild(tokenSpan);
+      li.appendChild(destSpan);
+      // Click a list item to "open" it in the result panel as if you
+      // had just created it. We don't have the edit_token (it's
+      // gone forever after create), so PATCH/DELETE will go through
+      // the owner shortcut on the API.
+      li.addEventListener("click", () => openOwnedQR(item));
+      list.appendChild(li);
+    }
+  } catch {
+    sidebar.hidden = true;
+  }
+}
+
+function openOwnedQR(item) {
+  // Render the result panel against an existing owned QR. The
+  // edit_token field is left empty + hidden because, for owners,
+  // the API accepts the session cookie alone.
+  $("qr-image").src = `/api/qr/${item.token}/image`;
+  $("short-url").value = item.short_url;
+  $("original-url").value = item.original_url;
+  $("token").value = item.token;
+  $("edit-token").value = "(owned by you — session cookie is the credential)";
+  currentToken = item.token;
+  currentEditToken = null;  // owner shortcut, no bearer needed
+  editTokenCopied = true;   // suppress the "you didn't save the token" prompt
+  $("create-form").hidden = true;
+  $("result").hidden = false;
+  hideEditFeedback();
 }
 
 $("login-btn").addEventListener("click", () => {

@@ -174,6 +174,78 @@ def test_logout_clears_cookie_and_invalidates_session(client, email_capture):
     assert client.get("/api/auth/me").json()["user"] is None
 
 
+def _login(client, email_capture, email="alice@example.com") -> None:
+    """Helper: complete a full magic-link round-trip so subsequent
+    requests on this client are authenticated as `email`."""
+    client.post("/api/auth/request-link", json={"email": email})
+    token = _extract_magic_token(email_capture.sent[-1][1])
+    client.get(f"/api/auth/verify?token={token}", follow_redirects=False)
+
+
+def test_my_qrs_empty_when_anonymous(client):
+    r = client.get("/api/qr/mine")
+    assert r.status_code == 200
+    assert r.json() == {"items": []}
+
+
+def test_my_qrs_lists_only_creates_after_signin(client, email_capture):
+    # Anonymous create — should NOT appear in my-qrs after signin.
+    anon = client.post("/api/qr/create", json={"url": "https://anon.example"})
+    anon_token = anon.json()["token"]
+
+    _login(client, email_capture)
+
+    owned = client.post("/api/qr/create", json={"url": "https://mine.example"})
+    owned_token = owned.json()["token"]
+
+    r = client.get("/api/qr/mine").json()
+    tokens = {item["token"] for item in r["items"]}
+    assert owned_token in tokens
+    assert anon_token not in tokens
+
+
+def test_owner_can_patch_without_edit_token(client, email_capture):
+    _login(client, email_capture)
+    created = client.post("/api/qr/create", json={"url": "https://before.example"})
+    token = created.json()["token"]
+
+    # PATCH without Authorization header — owner shortcut should accept
+    r = client.patch(f"/api/qr/{token}", json={"url": "https://after.example"})
+    assert r.status_code == 200
+    assert r.json()["original_url"] == "https://after.example"
+
+
+def test_non_owner_cannot_patch_without_edit_token(client, email_capture):
+    # Alice creates a link while logged in
+    _login(client, email_capture, "alice@example.com")
+    created = client.post("/api/qr/create", json={"url": "https://alice.example"})
+    token = created.json()["token"]
+    # Note: edit_token is still returned for owners too -- the API
+    # contract doesn't change. We just don't NEED it.
+
+    # Bob logs in (replaces session cookie)
+    client.cookies.clear()
+    _login(client, email_capture, "bob@example.com")
+
+    # Bob tries to PATCH without bearer
+    r = client.patch(f"/api/qr/{token}", json={"url": "https://bob.example"})
+    assert r.status_code == 401
+
+
+def test_owner_my_qrs_does_not_include_deleted(client, email_capture):
+    _login(client, email_capture)
+    a = client.post("/api/qr/create", json={"url": "https://a.example"}).json()
+    b = client.post("/api/qr/create", json={"url": "https://b.example"}).json()
+
+    # Soft-delete one
+    client.delete(f"/api/qr/{a['token']}")
+
+    items = client.get("/api/qr/mine").json()["items"]
+    tokens = {i["token"] for i in items}
+    assert b["token"] in tokens
+    assert a["token"] not in tokens
+
+
 def test_second_login_with_same_email_reuses_user_row(client, email_capture):
     """Two successful magic-link round-trips for one email produce the
     same `User` row (matched on email). The second session is independent."""

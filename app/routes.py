@@ -13,13 +13,16 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import config
+from .auth import get_current_user
 from .database import get_db
 from .limiter import limiter
-from .models import ScanEvent, UrlMapping
+from .models import ScanEvent, UrlMapping, User
 from .schemas import (
     CreateRequest,
     CreateResponse,
+    MyQRsResponse,
     QRInfoResponse,
+    QRSummary,
     RotateEditTokenResponse,
     UpdateRequest,
 )
@@ -164,7 +167,12 @@ def _to_naive_utc(dt: datetime | None) -> datetime | None:
 
 @router.post("/api/qr/create", response_model=CreateResponse)
 @limiter.limit(_create_rate_limit)
-def create_qr(request: Request, req: CreateRequest, db: Session = Depends(get_db)):
+def create_qr(
+    request: Request,
+    req: CreateRequest,
+    db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
+):
     # slowapi reads the client IP off `request`; the param must be named
     # `request` for the decorator to find it. We don't otherwise use it
     # here — but it's required to be in the signature.
@@ -181,6 +189,10 @@ def create_qr(request: Request, req: CreateRequest, db: Session = Depends(get_db
         token=token,
         original_url=normalized_url,
         edit_token_hash=edit_token_hash,
+        # Tag with owner only if the caller is authenticated. Anonymous
+        # creates still produce a usable QR + edit_token; they just
+        # won't show up in anyone's "My QRs" list.
+        owner_id=user.id if user is not None else None,
         expires_at=expires_at,
     )
     db.add(mapping)
@@ -242,6 +254,47 @@ def redirect(token: str, request: Request, db: Session = Depends(get_db)):
     return RedirectResponse(url=mapping.original_url, status_code=302)
 
 
+@router.get("/api/qr/mine", response_model=MyQRsResponse)
+def list_my_qrs(
+    db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
+):
+    """Return the signed-in user's owned, non-deleted QR codes.
+
+    REGISTERED BEFORE `/api/qr/{token}` on purpose — FastAPI matches
+    routes in registration order, and `mine` would otherwise be
+    captured by the `{token}` path parameter and 404 out of
+    `_get_mapping_or_404`.
+
+    Anonymous callers get an empty list — the UI uses 200/empty as
+    the "no QRs to show" signal, so it doesn't need a separate 401
+    path just to render the sidebar header.
+    """
+    if user is None:
+        return MyQRsResponse(items=[])
+
+    rows = (
+        db.query(UrlMapping)
+        .filter(UrlMapping.owner_id == user.id)
+        .filter(UrlMapping.is_deleted.is_(False))
+        .order_by(UrlMapping.created_at.desc())
+        .all()
+    )
+    return MyQRsResponse(
+        items=[
+            QRSummary(
+                token=r.token,
+                short_url=f"{BASE_URL}/r/{r.token}",
+                original_url=r.original_url,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+                expires_at=r.expires_at,
+            )
+            for r in rows
+        ]
+    )
+
+
 @router.get("/api/qr/{token}", response_model=QRInfoResponse)
 def get_qr_info(token: str, db: Session = Depends(get_db)):
     mapping = _get_mapping_or_404(token, db)
@@ -256,9 +309,10 @@ def update_qr(
     request: Request,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
 ):
     mapping = _get_mapping_or_404(token, db)
-    _require_edit_token(mapping, authorization)
+    _require_edit_authorization(mapping, authorization, user)
 
     if req.url is not None:
         try:
@@ -287,24 +341,16 @@ def rotate_edit_token_route(
     request: Request,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
 ):
     """Issue a fresh edit_token and invalidate the old one.
 
-    Use when an edit_token has been leaked or the owner wants to
-    proactively rotate credentials. The old token stops working the
-    instant this commits; the new token must be presented as
-    `Authorization: Bearer ...` on subsequent PATCH/DELETE/rotate
-    calls.
-
-    Authentication is the *current* edit_token — there's no admin
-    override and no recovery flow. If a caller has already lost the
-    token, the link is permanently un-editable. That matches the
-    "credential is shown once at create time" contract; recovery
-    would require a separate identity system (email, OAuth) which is
-    out of scope.
+    Authorization: either the current edit_token (Authorization header)
+    OR being signed in as the mapping's owner. Owners can now rotate
+    the bearer credential even if they never saved it.
     """
     mapping = _get_mapping_or_404(token, db)
-    _require_edit_token(mapping, authorization)
+    _require_edit_authorization(mapping, authorization, user)
 
     new_plain, new_hash = generate_edit_token()
     mapping.edit_token_hash = new_hash
@@ -320,9 +366,10 @@ def delete_qr(
     request: Request,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
 ):
     mapping = _get_mapping_or_404(token, db)
-    _require_edit_token(mapping, authorization)
+    _require_edit_authorization(mapping, authorization, user)
     mapping.is_deleted = True
     db.commit()
     # Invalidate cache
@@ -376,19 +423,35 @@ def _get_mapping_or_404(token: str, db: Session) -> UrlMapping:
     return mapping
 
 
-def _require_edit_token(mapping: UrlMapping, authorization: str | None) -> None:
-    """Reject PATCH/DELETE unless the caller presents the right edit token.
+def _require_edit_authorization(
+    mapping: UrlMapping,
+    authorization: str | None,
+    user: User | None,
+) -> None:
+    """Authorize a mutation on `mapping` by EITHER ownership OR bearer.
 
-    The header is the standard `Authorization: Bearer <plaintext>`.
-    We hash the presented value and compare it against `edit_token_hash`
-    on the row with `hmac.compare_digest` to keep timing-attack resistance
-    on the hash comparison. Rows created before this column existed have
-    `edit_token_hash is None` and are treated as un-editable — there's
-    no way to recover a credential for them, which matches the "credential
-    is shown once at create time" semantics.
+    Two paths are accepted, in order:
+
+    1. **Owner shortcut.** The caller is signed in AND owns the
+       mapping (`mapping.owner_id == user.id`). No bearer needed —
+       the session cookie is the credential. This is the path most
+       users take from the UI's "My QRs" sidebar.
+
+    2. **Bearer fallback.** The caller presents the correct
+       `Authorization: Bearer <edit_token>` header. This is the path
+       for anonymous creators (no account) and for programmatic
+       callers like CI scripts. The header is hashed and compared
+       with `hmac.compare_digest` for timing-attack resistance.
+
+    Mappings with `edit_token_hash is None` AND no owner are
+    un-editable — that's the legacy-row case noted in the column doc.
     """
+    # Path 1: owner shortcut
+    if user is not None and mapping.owner_id == user.id:
+        return
+
+    # Path 2: bearer fallback
     if mapping.edit_token_hash is None:
-        # Legacy row, or somehow created without an edit token. Refuse.
         raise HTTPException(
             status_code=401,
             detail="This link is not editable (no edit_token on record).",
@@ -397,7 +460,10 @@ def _require_edit_token(mapping: UrlMapping, authorization: str | None) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401,
-            detail="Missing Authorization: Bearer <edit_token> header.",
+            detail=(
+                "This link is owned by another user. Provide "
+                "`Authorization: Bearer <edit_token>` or sign in as the owner."
+            ),
         )
 
     presented = authorization[len("Bearer ") :].strip()

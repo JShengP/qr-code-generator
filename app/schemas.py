@@ -59,3 +59,23 @@ class MeResponse(BaseModel):
     # Wrapping in an envelope so the response shape stays consistent
     # whether the caller is logged in (user populated) or not (null).
     user: UserResponse | None
+
+
+# --- My QRs (logged-in user's owned mappings) -----------------------
+
+
+class QRSummary(BaseModel):
+    """Lightweight projection of UrlMapping for list views — same fields
+    as QRInfoResponse plus short_url for convenience. Does NOT include
+    edit_token / edit_token_hash; owner identity is the auth here."""
+
+    token: str
+    short_url: str
+    original_url: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime | None
+
+
+class MyQRsResponse(BaseModel):
+    items: list[QRSummary]
