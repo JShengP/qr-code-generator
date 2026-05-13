@@ -1,3 +1,7 @@
 -r requirements.txt
 pytest==8.3.4
 httpx==0.28.1
+# Playwright drives a real browser for the e2e/ tests. The
+# `playwright install chromium` step downloads the browser binary
+# (~140 MB). CI does the same -- see .github/workflows/test.yml.
+pytest-playwright==0.5.2

@@ -24,5 +24,15 @@ jobs:
       - name: Install deps
         run: pip install -r requirements-dev.txt
 
-      - name: Run pytest with deprecation-warnings-as-errors
-        run: pytest -v -W error::DeprecationWarning
+      # Playwright browser binaries aren't on pip — they live in
+      # ~/.cache/ms-playwright. `playwright install --with-deps`
+      # also pulls Linux system libs (libnss3, etc.) needed by
+      # Chromium on the Ubuntu runner.
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run in-process pytest suite
+        run: pytest -v -W error::DeprecationWarning --ignore=tests/e2e
+
+      - name: Run Playwright e2e suite
+        run: pytest -v tests/e2e --browser chromium
