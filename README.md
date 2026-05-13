@@ -31,7 +31,8 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-API docs: <http://localhost:8000/docs>
+- **Web UI**: <http://localhost:8000/> — paste a URL, get a QR + short link.
+- **API docs**: <http://localhost:8000/docs>
 
 ## Testing
 
@@ -66,6 +67,6 @@ Hits the running server with the 8 PROMPT.md scenarios and prints PASS/FAIL per 
 - [x] Stage 3 — `feat(url)`: normalize + blocklist
 - [x] Stage 4 — `feat(redirect)`: cache → DB → 404/410 fallback
 - [x] Stage 5 — pytest suite + PowerShell smoke script
-- [ ] Stage 6 — minimal HTML frontend
+- [x] Stage 6 — static HTML frontend (vanilla JS + `fetch`)
 - [ ] Stage 7 — rate limit on create
 - [ ] Stage 8 — design-decision write-up

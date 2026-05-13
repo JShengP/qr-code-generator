@@ -201,3 +201,21 @@ def test_cache_invalidated_on_delete(client):
     client.delete(f"/api/qr/{token}")
     r = client.get(f"/r/{token}", follow_redirects=False)
     assert r.status_code == 410
+
+
+# ---------------------------------------------------------------------------
+# Static front-end — mount at "/" must not shadow the API.
+# ---------------------------------------------------------------------------
+
+
+def test_index_html_served_at_root(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "create-form" in r.text
+
+
+def test_unknown_static_path_returns_404(client):
+    """The StaticFiles catch-all must 404 paths it doesn't have."""
+    r = client.get("/this-file-does-not-exist")
+    assert r.status_code == 404

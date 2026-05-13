@@ -144,3 +144,22 @@ The reference repo has no test suite — `answers/` is implementation only. We a
 **Test isolation:** every test gets a fresh in-memory SQLite (via `StaticPool` so the `:memory:` connection persists across the test's requests) and the module-global `redirect_cache` is cleared in setup/teardown. Tests are order-independent.
 
 **Bonus fix landing here (caught by the test warnings):** `models.py` was still using `datetime.utcnow` for column defaults, which Python 3.12 deprecates. We replace it with an `_utc_now_naive()` helper that returns the same naive UTC value via the non-deprecated `datetime.now(timezone.utc).replace(tzinfo=None)` spelling. The reference still uses `datetime.utcnow` and emits 47 `DeprecationWarning`s on a full test run. Running `pytest -W error::DeprecationWarning` now passes silently.
+
+---
+
+## Stage 6 — static HTML frontend (additive)
+
+The reference has no UI. We add `static/{index.html,app.js,styles.css}` and mount it via `app.mount("/", StaticFiles(..., html=True))` in `app/main.py`.
+
+**Routing-order invariant:** `include_router(router)` is called *before* the `mount("/", ...)`, so the API routes (`/api/qr/...`, `/r/{token}`) take precedence. The mount is a catch-all that serves `index.html` for `/` (thanks to `html=True`) and 404s for paths it doesn't recognise. Two new tests (`test_index_html_served_at_root`, `test_unknown_static_path_returns_404`) lock this invariant in.
+
+**Why front/back separation rather than Jinja2 templating:** the user explicitly picked the static-files + `fetch()` shape. It mirrors real-world deployment patterns (CDN can host `static/` separately from the API; the front end has its own cache lifecycle), keeps the API surface unambiguous, and lets the UI evolve without touching Python.
+
+**Stack choices inside the UI:**
+
+- Vanilla JS, no build step. Stage 6 should be reviewable in a single sitting and runnable without `npm`.
+- Dark theme by default (matches portfolio aesthetic). All colours via CSS custom properties at the top of `styles.css` so a light theme is a one-block change.
+- Clipboard via `navigator.clipboard.writeText` with a `document.execCommand("copy")` fallback for older browsers / non-HTTPS contexts.
+- Form error display understands both Pydantic's array-shaped 422 (`detail: [{loc, msg}, ...]`) and our hand-thrown string-shaped 422 (`detail: "..."`).
+
+**Path resolution:** `STATIC_DIR = Path(__file__).resolve().parent.parent / "static"` — absolute path computed from `main.py`'s location so the mount works whether uvicorn is launched from the repo root, a CI runner, or a container `WORKDIR`.

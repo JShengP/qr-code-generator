@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QR Code Generator</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>QR Code Generator</h1>
+      <p class="subtitle">Paste a URL → get a short link + scannable QR code.</p>
+    </header>
+
+    <form id="create-form" novalidate>
+      <label for="url-input">URL to shorten</label>
+      <input
+        id="url-input"
+        name="url"
+        type="url"
+        placeholder="https://example.com/long/path?with=query"
+        required
+        autofocus
+      />
+      <button type="submit">Create</button>
+    </form>
+
+    <div id="error" class="alert alert-error" hidden></div>
+
+    <section id="result" hidden>
+      <img id="qr-image" alt="QR code for the short link" />
+      <div class="result-fields">
+        <div class="field">
+          <label>Short URL</label>
+          <div class="row">
+            <input id="short-url" readonly />
+            <button type="button" class="copy" data-target="short-url">Copy</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Original URL <span class="hint">(after normalization)</span></label>
+          <div class="row">
+            <input id="original-url" readonly />
+          </div>
+        </div>
+        <div class="field">
+          <label>Token</label>
+          <div class="row">
+            <input id="token" readonly />
+          </div>
+        </div>
+      </div>
+      <button type="button" id="reset">Create another</button>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
