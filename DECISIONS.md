@@ -124,3 +124,23 @@ Validated end-to-end with `curl.exe` against a local uvicorn:
 - GET `/r/{token}` → 302 to `https://new-target.com`
 - DELETE → 200
 - GET `/r/{token}` → 410 "Gone — this link has been deleted"
+
+---
+
+## Stage 5 — test layer + `models.py` datetime deprecation
+
+The reference repo has no test suite — `answers/` is implementation only. We add two:
+
+1. **`tests/test_api.py` (22 tests, pytest + FastAPI TestClient)** — covers all 8 PROMPT.md scenarios plus regressions specific to the Stage 2–4 deviations:
+   - URL normalization preserves path/query case
+   - No `http → https` upgrade
+   - Root-only trailing slash collapses only when no query/fragment follows
+   - Past-`expires_at` link returns 410
+   - tz-aware ISO with `Z` suffix doesn't crash redirect (this would actually fail against the reference's redirect handler — see Stage 4 deviation 3)
+   - PATCH and DELETE both invalidate the cache
+
+2. **`scripts/smoke.ps1`** — Windows-native PowerShell script that hits a *running* server with the 8 PROMPT scenarios + the tz-Z regression. Uses `Invoke-RestMethod` / `Invoke-WebRequest` to dodge the [PowerShell-5.1 native-arg quote-eating bug](https://github.com/PowerShell/PowerShell/issues/1995) that broke our first attempt at a `curl.exe`-based script. Exits non-zero on failure.
+
+**Test isolation:** every test gets a fresh in-memory SQLite (via `StaticPool` so the `:memory:` connection persists across the test's requests) and the module-global `redirect_cache` is cleared in setup/teardown. Tests are order-independent.
+
+**Bonus fix landing here (caught by the test warnings):** `models.py` was still using `datetime.utcnow` for column defaults, which Python 3.12 deprecates. We replace it with an `_utc_now_naive()` helper that returns the same naive UTC value via the non-deprecated `datetime.now(timezone.utc).replace(tzinfo=None)` spelling. The reference still uses `datetime.utcnow` and emits 47 `DeprecationWarning`s on a full test run. Running `pytest -W error::DeprecationWarning` now passes silently.
