@@ -298,6 +298,34 @@ def test_blocklist_case_insensitive(client):
     assert r.status_code == 422
 
 
+def test_blocklist_catches_cyrillic_homograph(client):
+    """Cyrillic 'е' (U+0435) folds to Latin 'e', so 'еvil.com' must block."""
+    cyrillic_evil = "еvil.com"  # "еvil.com"
+    r = client.post("/api/qr/create", json={"url": f"https://{cyrillic_evil}/"})
+    assert r.status_code == 422
+
+
+def test_blocklist_catches_punycode_of_homograph(client):
+    """The punycode form of the same Cyrillic 'еvil.com' must also block."""
+    cyrillic_evil = "еvil.com"
+    # Convert each label to punycode the way browsers and DNS would.
+    punycode = ".".join(
+        label.encode("idna").decode("ascii") for label in cyrillic_evil.split(".")
+    )
+    assert punycode.startswith("xn--"), f"unexpected punycode: {punycode!r}"
+
+    r = client.post("/api/qr/create", json={"url": f"https://{punycode}/"})
+    assert r.status_code == 422
+
+
+def test_legitimate_idn_not_blocked(client):
+    """A real IDN that isn't on the blocklist must still go through."""
+    # 日本.jp is a legitimate IDN; none of its chars are in _HOMOGRAPH_MAP,
+    # and it doesn't fold to any blocked domain.
+    r = client.post("/api/qr/create", json={"url": "https://日本.jp/path"})
+    assert r.status_code == 200
+
+
 def test_userinfo_in_url_rejected(client):
     """`user:pass@host` is a phishing primitive — reject outright."""
     for url in [

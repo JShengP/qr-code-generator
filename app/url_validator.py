@@ -1,8 +1,42 @@
 import ipaddress
+import unicodedata
 from urllib.parse import urlparse, urlunparse
 
 MAX_URL_LENGTH = 2048
 ALLOWED_SCHEMES = ("http", "https")
+
+# Cyrillic + Greek glyphs that visually fold to ASCII letters. Sourced
+# from the Unicode TR39 confusables data narrowed to the high-frequency
+# attack subset; the broader confusables database is several thousand
+# entries but the long tail is rarely used in practice. Production
+# systems should pull from `confusable_homoglyphs` or a hosted feed.
+#
+# The map's key is the Unicode glyph; the value is the Latin letter it
+# fools the eye into thinking it is. Hostnames are lowercased before
+# the map is applied, so we only need lowercase entries.
+_HOMOGRAPH_MAP = {
+    # Cyrillic → Latin
+    "а": "a",  # а
+    "е": "e",  # е
+    "о": "o",  # о
+    "р": "p",  # р
+    "с": "c",  # с
+    "у": "y",  # у
+    "х": "x",  # х
+    "ѕ": "s",  # ѕ
+    "і": "i",  # і
+    "ј": "j",  # ј
+    # Greek → Latin
+    "α": "a",  # α
+    "ε": "e",  # ε
+    "ο": "o",  # ο
+    "ρ": "p",  # ρ
+    "τ": "t",  # τ
+    "υ": "y",  # υ
+    "χ": "x",  # χ
+    # Latin lookalikes
+    "ı": "i",  # ı (dotless i)
+}
 
 # Hostnames forbidden by name. The IP-literal checks below cover the
 # common SSRF surface (loopback, RFC 1918, link-local, cloud metadata,
@@ -32,21 +66,74 @@ BLOCKED_DOMAINS = {
 _FORBIDDEN_URL_CHARS = ("\r", "\n", "\t", "\x00")
 
 
+def _canonical_hostname(hostname: str) -> str:
+    """Canonicalize a hostname for blocklist comparison.
+
+    Two transformations are applied:
+
+    1. **Punycode decode.** Labels starting with ``xn--`` are decoded
+       back to their Unicode form via stdlib ``encodings.idna``. This
+       collapses ``xn--vil-7ka.com`` (the punycode of ``еvil.com``,
+       where ``е`` is Cyrillic U+0435) into ``еvil.com``, the form a
+       human reading the QR-rendered short URL would see.
+
+    2. **Homograph fold.** Each Cyrillic/Greek glyph that visually
+       passes for an ASCII letter is replaced by that ASCII letter
+       through ``_HOMOGRAPH_MAP``. So ``еvil.com`` (Cyrillic ``е``)
+       collapses to ``evil.com``.
+
+    The returned string is the "skeleton" used to compare against the
+    blocklist. Two hostnames that look identical to a human eye should
+    map to the same skeleton; a legitimate IDN like ``日本.jp`` passes
+    through unchanged because none of its characters appear in the map.
+    """
+    if not hostname:
+        return hostname
+    # Step 1: decode any punycode labels.
+    decoded_labels = []
+    for label in hostname.split("."):
+        if label.startswith("xn--"):
+            try:
+                label = label.encode("ascii").decode("idna")
+            except (UnicodeError, ValueError):
+                # Malformed punycode — leave the raw form alone and let
+                # the strict-match branch fail loudly.
+                pass
+        decoded_labels.append(label)
+    decoded = ".".join(decoded_labels)
+    # Step 2: NFKC normalization (folds compatibility characters) +
+    # homograph map. NFKC collapses things like ﬂ → fl, full-width
+    # digits, etc.; the manual map covers the cross-script lookalikes
+    # NFKC doesn't touch.
+    normalized = unicodedata.normalize("NFKC", decoded.lower())
+    return "".join(_HOMOGRAPH_MAP.get(c, c) for c in normalized)
+
+
 def is_blocked_domain(hostname: str | None) -> bool:
-    """True if the hostname is on either blocklist (by name or by suffix)."""
+    """True if the hostname is on either blocklist.
+
+    Checks both the literal hostname AND its canonical (homograph-
+    folded, punycode-decoded) form, so neither ``еvil.com`` (Cyrillic)
+    nor ``xn--vil-7ka.com`` (punycode of the same) bypass an entry like
+    ``evil.com`` in the blocklist.
+    """
     if hostname is None:
         return True
-    h = hostname.lower()
-    if h in BLOCKED_HOSTNAMES:
-        return True
-    if h in BLOCKED_DOMAINS:
-        return True
-    # Match parent suffixes too: `login.evil.com` and `a.b.evil.com`
-    # are both blocked if `evil.com` is. This prevents the trivial
-    # subdomain bypass the original blocklist permitted.
-    for blocked in BLOCKED_DOMAINS:
-        if h.endswith("." + blocked):
+    # Build the set of forms to check: the raw hostname (lowercased)
+    # and its canonical/skeleton form. Using a set means a hostname
+    # that's already ASCII only costs one comparison pass.
+    forms = {hostname.lower(), _canonical_hostname(hostname)}
+    for h in forms:
+        if h in BLOCKED_HOSTNAMES:
             return True
+        if h in BLOCKED_DOMAINS:
+            return True
+        # Match parent suffixes too: `login.evil.com` and `a.b.evil.com`
+        # are both blocked if `evil.com` is. This prevents the trivial
+        # subdomain bypass the original blocklist permitted.
+        for blocked in BLOCKED_DOMAINS:
+            if h.endswith("." + blocked):
+                return True
     return False
 
 
