@@ -14,16 +14,38 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 
 ## Endpoints
 
+### QR
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/qr/create` | **session** | Create a short URL + QR code (optional `expires_at`). Returns a one-time `edit_token` for programmatic clients. |
+| `GET` | `/r/{token}` | none | 302 redirect to the original URL (cache → DB → 404/410). |
+| `GET` | `/api/qr/{token}` | none | Metadata (URL, timestamps, deletion/expiry state). |
+| `PATCH` | `/api/qr/{token}` | **session OR bearer** | Update target URL and/or expiration. Owner shortcut: a signed-in caller who owns the mapping skips the bearer. |
+| `DELETE` | `/api/qr/{token}` | **session OR bearer** | Soft delete; row stays in DB, subsequent redirects return 410. Recorded in `audit_logs`. |
+| `GET` | `/api/qr/{token}/image` | none | PNG of the QR code that encodes the short URL. |
+| `GET` | `/api/qr/{token}/analytics` | none | Total scans + scans-by-day breakdown. |
+| `POST` | `/api/qr/{token}/rotate-edit-token` | **session OR bearer** | Issue a fresh `edit_token`; old one is invalidated. |
+| `GET` | `/api/qr/mine` | session | List the signed-in user's QRs (anonymous returns empty). |
+
+### Auth
+
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/qr/create` | Create a short URL + QR code (optional `expires_at`) |
-| `GET` | `/r/{token}` | 302 redirect to the original URL (cache → DB → 404/410) |
-| `GET` | `/api/qr/{token}` | Metadata (URL, timestamps, deletion/expiry state) |
-| `PATCH` | `/api/qr/{token}` | Update the target URL and/or expiration |
-| `DELETE` | `/api/qr/{token}` | Soft delete; subsequent redirects return 410 |
-| `GET` | `/api/qr/{token}/image` | PNG of the QR code that encodes the short URL |
-| `GET` | `/api/qr/{token}/analytics` | Total scans + scans-by-day breakdown |
-| `POST` | `/api/qr/{token}/rotate-edit-token` | Issue a fresh `edit_token`; old one is invalidated. |
+| `POST` | `/api/auth/request-link` | Magic-link sign-in. Dev mode prints the link to the server console; production sends email. |
+| `GET` | `/api/auth/verify?token=...` | Consume a magic link, create session, set `qrs_session` cookie. |
+| `GET` | `/api/auth/me` | Current user (or `null` if signed out). |
+| `POST` | `/api/auth/logout` | Delete session row + clear cookie. |
+| `GET` | `/api/auth/github/login` | OAuth: redirect to GitHub authorize (only registered when `GITHUB_CLIENT_ID` set). |
+| `GET` | `/api/auth/github/callback` | OAuth callback: exchange code, find-or-create user, set session. |
+| `GET` | `/api/auth/github/available` | Probe whether GitHub OAuth is configured server-side. |
+
+**Two ways to authenticate a mutation:**
+
+1. **Browser users** — sign in via magic link or GitHub; the `qrs_session` cookie carries the credential. The UI never asks for an `edit_token`.
+2. **Programmatic clients** (CI scripts, curl, automation) — keep the `edit_token` that `POST /api/qr/create` returns once, then send it as `Authorization: Bearer <token>` on `PATCH`/`DELETE`/`rotate-edit-token`. The DB stores only the SHA-256 hash; losing the plaintext means rotating to issue a fresh one.
+
+**Accounts unify on email:** signing in via magic link and then via GitHub with the same email merges into one user row. GitHub primary-email matches link an existing magic-link account to the GitHub identity; differing emails create separate users.
 
 ### Rate limiting
 
@@ -52,8 +74,16 @@ All configuration is centralized in [`app/config.py`](app/config.py) and reads `
 | `SCAN_DEDUP_WINDOW` | `1.0` | Seconds; per-(token, ip) burst dedup on scan recording. |
 | `SCAN_FLUSH_BATCH_SIZE` | `10` | Buffered scans flush after N rows. |
 | `SCAN_FLUSH_INTERVAL` | `5.0` | Buffered scans flush after N seconds since last flush. |
+| `SESSION_COOKIE_NAME` | `qrs_session` | Cookie name for the opaque session token. |
+| `SESSION_TTL_DAYS` | `30` | How long a session row stays valid. |
+| `MAGIC_LINK_TTL_MINUTES` | `15` | How long a magic link stays redeemable. |
+| `AUTH_REQUEST_RATE_LIMIT` | `3/minute` | Per-IP cap on `POST /api/auth/request-link`. |
+| `EMAIL_PROVIDER` | `(empty)` | `console` (default, prints magic link to stdout) or future `resend` / `smtp`. |
+| `EMAIL_FROM` | `noreply@localhost` | Sender address for production email. |
+| `GITHUB_CLIENT_ID` | `(empty)` | Set to enable GitHub OAuth. Register at <https://github.com/settings/developers>. |
+| `GITHUB_CLIENT_SECRET` | `(empty)` | Paired with `GITHUB_CLIENT_ID`. |
 
-**`PATCH` and `DELETE` require auth.** The create response includes a one-time `edit_token` (~256 bits, returned only on creation); subsequent PATCH/DELETE calls must include `Authorization: Bearer <edit_token>`. The DB stores only the SHA-256 hash. Losing the `edit_token` means losing the ability to edit the link.
+A blank `.env.example` is checked in at the repo root listing every var name; copy to `.env`, fill values, and your shell can `source` it (or use a tool like `direnv`).
 
 ## Architecture
 
@@ -100,20 +130,27 @@ All configuration is centralized in [`app/config.py`](app/config.py) and reads `
 ```
 qr-code-generator/
 ├── app/
-│   ├── main.py            FastAPI app: API + StaticFiles + 429 handler
-│   ├── routes.py          7 endpoints (create / redirect / info / patch / delete / image / analytics)
+│   ├── main.py            FastAPI app: API + StaticFiles + 429 handler + lifespan
+│   ├── config.py          single source of truth for env-driven settings
+│   ├── routes.py          9 QR endpoints + analytics
 │   ├── schemas.py         Pydantic request/response models
-│   ├── models.py          SQLAlchemy tables: url_mappings, scan_events
-│   ├── database.py        SQLite engine + session factory
-│   ├── token_gen.py       SHA-256 + Base62 + collision retry
-│   ├── url_validator.py   normalize + length + scheme + blocklist
-│   └── limiter.py         shared slowapi Limiter
-├── static/                vanilla-JS UI served at /
-├── tests/                 25 pytest cases, in-process via TestClient
-├── scripts/smoke.ps1      PowerShell end-to-end against a running server
+│   ├── models.py          SQLAlchemy: url_mappings, scan_events, users,
+│   │                      user_sessions, magic_links, audit_logs
+│   ├── database.py        SQLAlchemy engine + session factory
+│   ├── token_gen.py       SHA-256 + Base62 + collision retry, + edit_token
+│   ├── url_validator.py   normalize + length + scheme + SSRF + blocklist
+│   ├── limiter.py         shared slowapi Limiter
+│   ├── auth.py            get_current_user dependency
+│   ├── auth_routes.py     /api/auth/* magic-link endpoints
+│   ├── oauth_github.py    /api/auth/github/* OAuth flow
+│   └── email_service.py   pluggable EmailService (Console / future Resend)
+├── static/                vanilla-JS UI served at / (login, My QRs, edit)
+├── tests/                 91 pytest cases (test_api / test_auth / test_audit)
+├── scripts/smoke.ps1      end-to-end PowerShell script (needs session cookie)
 ├── .github/workflows/     CI runs pytest on push/PR
 ├── DECISIONS.md           code-level deviations from answers/ with reasoning
 ├── ANSWERS.md             5 PROMPT.md design-question write-ups
+├── .env.example           every env var documented with blank value
 ├── requirements.txt       runtime deps
 └── requirements-dev.txt   adds pytest + httpx
 ```
@@ -147,7 +184,16 @@ pip install -r requirements-dev.txt
 pytest -v
 ```
 
-25 tests covering the 8 PROMPT scenarios plus regressions for URL normalization, blocklist, expired-link 410, tz-aware ISO inputs, and the rate limit. Each test uses an isolated in-memory SQLite DB, clears the redirect cache, and disables the rate limiter so they're order-independent and parallel-safe.
+91 tests across three files (`test_api.py` / `test_auth.py` / `test_audit.py`) covering:
+- 8 PROMPT.md scenarios + regressions for the Stage 2–4 design choices
+- URL normalization, blocklist (incl. IDN/punycode homographs), SSRF block
+- Rate limits (create / redirect / mutation) firing at threshold
+- edit_token bearer auth, owner-shortcut auth, rotation chain
+- Magic-link sign-in flow + session cookie + logout
+- QR ownership isolation between users
+- Audit log records every mutation (create / patch_url / patch_expires / delete / rotate)
+
+Each test gets a fresh in-memory SQLite, a pre-authenticated session (`test-runner@example.com`), reset caches, and disabled rate limiter. Tests that exercise anonymous behavior call `client.cookies.clear()` explicitly.
 
 CI runs the same suite on every push to `main` and every PR — see `.github/workflows/test.yml`.
 
@@ -158,13 +204,19 @@ CI runs the same suite on every push to `main` and every PR — see `.github/wor
 .\.venv\Scripts\Activate.ps1
 uvicorn app.main:app --reload
 
+# Sign in once via http://127.0.0.1:8000/ in your browser, then
+# DevTools -> Application -> Cookies -> copy the `qrs_session` value.
+
 # Terminal 2
+$env:QRS_SESSION_COOKIE = '<paste the cookie value>'
 .\scripts\smoke.ps1
 ```
 
-Hits the running server with the 8 PROMPT.md scenarios and prints PASS/FAIL per assertion. Exits non-zero on any failure so it can gate a release.
+Hits the running server with 12 scenarios (PROMPT.md basics + tz-aware expiry + edit_token rotation + anonymous-create-rejected) and prints PASS/FAIL per assertion. Exits non-zero on any failure so it can gate a release.
 
 ## Roadmap
+
+PROMPT.md core (Stages 1–8):
 
 - [x] Stage 1 — initial scaffold
 - [x] Stage 2 — `feat(token)`: SHA-256 + Base62 + collision retry
@@ -174,3 +226,24 @@ Hits the running server with the 8 PROMPT.md scenarios and prints PASS/FAIL per 
 - [x] Stage 6 — static HTML frontend (vanilla JS + `fetch`)
 - [x] Stage 7 — rate limit on create (`slowapi`, 10/minute per IP)
 - [x] Stage 8 — design-decision write-up + CI + architecture docs
+
+Post-review hardening:
+
+- [x] SSRF + CRLF + userinfo + subdomain blocklist in `validate_url`
+- [x] `edit_token` bearer auth on PATCH/DELETE
+- [x] Per-(token, ip) scan dedup + redirect rate limit
+- [x] PATCH/DELETE rate limit
+- [x] `cachetools.TTLCache` for the redirect cache
+- [x] Batched + async-flush scan_event writes
+- [x] Env-driven config (`app/config.py`)
+- [x] IDN/punycode homograph fold on blocklist
+- [x] `rotate-edit-token` endpoint
+
+User identity layer:
+
+- [x] Magic-link auth (users / user_sessions / magic_links tables)
+- [x] Sign-in / sign-out UI with auth bar
+- [x] QR ownership + `GET /api/qr/mine` + My-QRs sidebar
+- [x] GitHub OAuth as second sign-in path (`oauth_github.py`)
+- [x] `POST /api/qr/create` now requires authentication
+- [x] `audit_logs` table — every create/patch/delete/rotate recorded
