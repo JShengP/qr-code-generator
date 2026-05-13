@@ -123,14 +123,8 @@ $("reset").addEventListener("click", () => {
     );
     if (!proceed) return;
   }
-  resultPanel.hidden = true;
-  createForm.hidden = false;
-  $("url-input").value = "";
+  resetCreateView();
   $("url-input").focus();
-  hideEditFeedback();
-  currentToken = null;
-  currentEditToken = null;
-  editTokenCopied = false;
 });
 
 // Copy buttons (delegated).
@@ -383,8 +377,23 @@ $("logout-btn").addEventListener("click", async () => {
     // Best-effort on the client side. Even if the server call fails
     // we still refresh; the cookie path-delete may have worked.
   }
+  // Reset the visible UI back to the anonymous landing state.
+  // Without this, a result panel from an owned QR keeps rendering
+  // after sign-out — its Update button no longer works (no session)
+  // but the UI still suggests it does, which is misleading.
+  resetCreateView();
   await refreshAuthState();
 });
+
+function resetCreateView() {
+  resultPanel.hidden = true;
+  createForm.hidden = false;
+  $("url-input").value = "";
+  hideEditFeedback();
+  currentToken = null;
+  currentEditToken = null;
+  editTokenCopied = false;
+}
 
 function showLoginOK(msg) {
   loginStatus.textContent = msg;
