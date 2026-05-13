@@ -67,3 +67,12 @@ AUTH_REQUEST_RATE_LIMIT: str = os.getenv("AUTH_REQUEST_RATE_LIMIT", "3/minute")
 # mode, prints link to stdout). Future: "resend" / "smtp" / etc.
 EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "").lower()
 EMAIL_FROM: str = os.getenv("EMAIL_FROM", "noreply@localhost")
+
+# --- OAuth providers ---------------------------------------------------
+# GitHub OAuth app credentials. The app registration lives at
+# https://github.com/settings/developers; the callback URL there MUST
+# match `{BASE_URL}/api/auth/github/callback` exactly. Both values stay
+# in env vars — never committed.
+GITHUB_CLIENT_ID: str = os.getenv("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
+GITHUB_OAUTH_ENABLED: bool = bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)

@@ -7,9 +7,10 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from .auth_routes import auth_router
-from .config import IS_PRODUCTION
+from .config import GITHUB_OAUTH_ENABLED, IS_PRODUCTION
 from .database import Base, engine
 from .limiter import limiter
+from .oauth_github import github_router
 from .routes import router
 
 
@@ -60,6 +61,11 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # html=True, and falls through to 404 for paths it doesn't recognise.
 app.include_router(router)
 app.include_router(auth_router)
+# Only register the GitHub OAuth routes when credentials are present.
+# Otherwise hitting /api/auth/github/login on an unconfigured deployment
+# would 200 → bounce → fail in the callback rather than 503 fast.
+if GITHUB_OAUTH_ENABLED:
+    app.include_router(github_router)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

@@ -312,6 +312,48 @@ button.tertiary:hover {
   flex: none;
 }
 
+/* "or" divider in the login modal between email and GitHub paths. */
+.divider-text {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  margin: 1.25rem 0 0.75rem;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.divider-text::before, .divider-text::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.divider-text span {
+  padding: 0 0.75rem;
+}
+
+.github-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 0.65rem 1rem;
+  background: #24292f;
+  color: #fff;
+  text-decoration: none;
+  border: 1px solid #1c2128;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.github-button:hover { background: #1f242a; }
+
+.github-button svg { flex-shrink: 0; }
+
 #result {
   margin-top: 1.5rem;
   padding-top: 1.5rem;

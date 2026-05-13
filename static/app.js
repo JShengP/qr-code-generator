@@ -219,6 +219,29 @@ const loginError = $("login-error");
 // On page load, ask the server who we are. Updates the auth bar.
 refreshAuthState();
 
+// Also detect whether GitHub OAuth is configured server-side. The
+// route is conditionally registered in app/main.py based on env, so
+// a HEAD probe is enough: 200/302 means available, 404 means hide.
+detectGitHubLogin();
+
+async function detectGitHubLogin() {
+  try {
+    const r = await fetch("/api/auth/github/login", {
+      method: "HEAD",
+      redirect: "manual",
+    });
+    // 302 = configured (would redirect to github.com), 503 = not
+    // configured (route exists but disabled), 404 = route not
+    // registered at all. Treat anything in the 2xx/3xx range as "on."
+    if (r.status >= 200 && r.status < 400) {
+      $("github-login-section").hidden = false;
+    }
+  } catch {
+    // Network error — leave the section hidden, the user can still
+    // use the email path.
+  }
+}
+
 async function refreshAuthState() {
   try {
     const r = await fetch("/api/auth/me", { credentials: "same-origin" });
