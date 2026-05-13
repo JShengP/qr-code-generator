@@ -225,15 +225,13 @@ refreshAuthState();
 detectGitHubLogin();
 
 async function detectGitHubLogin() {
+  // /api/auth/github/available is only registered when the OAuth
+  // routes are. 200 = configured, 404 = not. Cheap probe with no
+  // side effects (the /login endpoint, by contrast, would set a
+  // state cookie even if we don't end up using it).
   try {
-    const r = await fetch("/api/auth/github/login", {
-      method: "HEAD",
-      redirect: "manual",
-    });
-    // 302 = configured (would redirect to github.com), 503 = not
-    // configured (route exists but disabled), 404 = route not
-    // registered at all. Treat anything in the 2xx/3xx range as "on."
-    if (r.status >= 200 && r.status < 400) {
+    const r = await fetch("/api/auth/github/available");
+    if (r.ok) {
       $("github-login-section").hidden = false;
     }
   } catch {

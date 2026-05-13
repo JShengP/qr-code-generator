@@ -30,6 +30,16 @@ from .models import User, UserSession
 
 github_router = APIRouter(prefix="/api/auth/github", tags=["auth", "github"])
 
+
+@github_router.get("/available")
+def github_available():
+    """Cheap probe so the UI can decide whether to render the GitHub
+    sign-in button. When this router isn't registered (no creds),
+    this endpoint 404s and the UI keeps the button hidden. When it
+    is registered, returns 200 unconditionally.
+    """
+    return {"enabled": True}
+
 # The CSRF anti-forgery cookie. The same value goes into the `state`
 # query parameter sent to GitHub; on callback we require them to match
 # so an attacker can't trick a victim into completing a login under
