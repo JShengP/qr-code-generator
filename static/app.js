@@ -399,9 +399,12 @@ $("logout-btn").addEventListener("click", async () => {
 
 function resetCreateView() {
   resultPanel.hidden = true;
-  // Whether to reveal the create form is decided by refreshAuthState
-  // based on /me. We hide the result panel and clear state; the auth
-  // refresh that runs after sign-out decides what the user sees next.
+  // Reveal the create form. This is the right state for "Start over"
+  // (caller is definitely signed in -- result panel implies it). For
+  // logout the caller chains refreshAuthState() after this, which
+  // re-hides the form and shows the signin-prompt instead.
+  createForm.hidden = false;
+  $("signin-prompt").hidden = true;
   hideEditFeedback();
   currentToken = null;
   currentEditToken = null;
