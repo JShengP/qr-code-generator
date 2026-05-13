@@ -447,6 +447,56 @@ def test_redirect_rate_limit_fires_at_threshold(rate_limited_client):
     assert overflow.status_code == 429
 
 
+def test_patch_rate_limited_after_threshold(rate_limited_client):
+    """Mutation rate limit must fire on PATCH flood from the same IP."""
+    from app import routes as routes_module
+
+    routes_module.MUTATION_RATE_LIMIT = "3/minute"
+
+    token, edit_token, _ = _create(rate_limited_client)
+    auth = {"Authorization": f"Bearer {edit_token}"}
+
+    for _ in range(3):
+        r = rate_limited_client.patch(
+            f"/api/qr/{token}", json={"url": "https://x.com"}, headers=auth
+        )
+        assert r.status_code == 200
+
+    r = rate_limited_client.patch(
+        f"/api/qr/{token}", json={"url": "https://x.com"}, headers=auth
+    )
+    assert r.status_code == 429
+
+
+def test_delete_rate_limited_after_threshold(rate_limited_client):
+    """DELETE has its own bucket (slowapi defaults to per-endpoint).
+
+    PATCH and DELETE each get the configured mutation limit
+    independently; an attacker can't double their rate by alternating,
+    but neither is shared. If we ever need a unified bucket use
+    `Limiter.shared_limit(scope="mutation")` — flagged in DECISIONS.
+    """
+    from app import routes as routes_module
+
+    routes_module.MUTATION_RATE_LIMIT = "2/minute"
+
+    # Create 3 tokens (so we can DELETE 3 distinct rows in one fixture).
+    creates = [_create(rate_limited_client, f"https://t{i}.com") for i in range(3)]
+
+    for i in range(2):
+        token, et, _ = creates[i]
+        r = rate_limited_client.delete(
+            f"/api/qr/{token}", headers={"Authorization": f"Bearer {et}"}
+        )
+        assert r.status_code == 200, f"DELETE {i} unexpectedly {r.status_code}"
+
+    token, et, _ = creates[2]
+    r = rate_limited_client.delete(
+        f"/api/qr/{token}", headers={"Authorization": f"Bearer {et}"}
+    )
+    assert r.status_code == 429
+
+
 def test_scan_dedup_skips_rapid_scans_from_same_ip(client):
     """With dedup enabled, 5 scans inside the window must collapse to 1 row."""
     from app import routes as routes_module

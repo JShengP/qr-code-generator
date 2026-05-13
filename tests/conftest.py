@@ -68,6 +68,7 @@ def client():
         routes_module._scan_last_seen.clear()
         routes_module.SCAN_DEDUP_WINDOW = 1.0  # restore prod default
         routes_module.REDIRECT_RATE_LIMIT = "300/minute"  # restore prod default
+        routes_module.MUTATION_RATE_LIMIT = "30/minute"   # restore prod default
         limiter.enabled = True
         limiter.reset()
         engine.dispose()

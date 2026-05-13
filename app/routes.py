@@ -39,10 +39,19 @@ SCAN_DEDUP_WINDOW = 1.0  # seconds; tests monkey-patch to 0.0 to disable
 # meaningfully cap brute-force flood. Read-only writes (the scan event)
 # are further bounded by the per-(token, ip) dedup window above.
 REDIRECT_RATE_LIMIT = "300/minute"
+# Mutation endpoints (PATCH/DELETE) share a tighter bucket. The bearer
+# token check is constant-time + 256 bits of entropy, so brute force is
+# already infeasible — this limit is defense in depth against a noisy
+# attacker who happens to be exploring 401-vs-other-status side channels.
+MUTATION_RATE_LIMIT = "30/minute"
 
 
 def _redirect_rate_limit() -> str:
     return REDIRECT_RATE_LIMIT
+
+
+def _mutation_rate_limit() -> str:
+    return MUTATION_RATE_LIMIT
 
 
 def _now_naive() -> datetime:
@@ -157,9 +166,11 @@ def get_qr_info(token: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/api/qr/{token}", response_model=QRInfoResponse)
+@limiter.limit(_mutation_rate_limit)
 def update_qr(
     token: str,
     req: UpdateRequest,
+    request: Request,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
@@ -185,8 +196,10 @@ def update_qr(
 
 
 @router.delete("/api/qr/{token}")
+@limiter.limit(_mutation_rate_limit)
 def delete_qr(
     token: str,
+    request: Request,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
