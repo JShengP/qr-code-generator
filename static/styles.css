@@ -199,6 +199,13 @@ button.tertiary:hover {
   font-size: 0.85rem;
 }
 
+/* `display: flex` above outranks the user-agent rule that the HTML
+   `hidden` attribute compiles to (`display: none`), so without this
+   override both bars would render together on a logged-in page. */
+.auth-anon[hidden], .auth-signed-in[hidden] {
+  display: none;
+}
+
 .auth-signed-in #auth-email {
   color: var(--text);
   font-weight: 500;
@@ -278,6 +285,13 @@ button.tertiary:hover {
   align-items: center;
   justify-content: center;
   z-index: 100;
+}
+
+/* Same fix as .auth-*: explicit `display: flex` defeats the
+   user-agent rule that backs the HTML `hidden` attribute, so the
+   modal would render even when the JS hides it. */
+.modal[hidden] {
+  display: none;
 }
 
 .modal-content {
