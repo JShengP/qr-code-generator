@@ -325,3 +325,127 @@ Conftest now resets `_scan_last_seen`, `SCAN_DEDUP_WINDOW`, and `REDIRECT_RATE_L
 - `REDIRECT_RATE_LIMIT` and `SCAN_DEDUP_WINDOW` should be env-var-driven (`os.getenv("REDIRECT_RATE_LIMIT", "300/minute")`) so production deployments can tune without a code change. Not done yet.
 - Behind a reverse proxy, `request.client.host` is the proxy IP, so dedup keys collapse all real users to one bucket. Same caveat as the slowapi `key_func` â€” production needs `X-Forwarded-For` parsing.
 - The dedup dict is per-worker. Multiple uvicorn workers each track their own state, so a worker-bouncing attacker can multiply their DB write rate by `min(workers, connections)`. A Redis-backed implementation closes this.
+
+## Post-review #5 ¡X PATCH/DELETE rate limit + endpoint-keyed slowapi
+
+Closed three findings together ¡X commits `bb717f8` and `5828a0a`.
+
+- **MUTATION_RATE_LIMIT (30/min/IP)** on `update_qr`, `delete_qr`, and `rotate_edit_token_route`. Defense-in-depth on the bearer-token check ¡X a 256-bit edit_token is already brute-force-infeasible, but the limit caps the noise.
+- **slowapi key_style = "endpoint"** (was the default "url"). With URL keying, every distinct `/api/qr/{token}` path got its own bucket, so an attacker iterating tokens bypassed the rate limit entirely. With endpoint keying, all PATCH calls from one IP share a bucket regardless of which token's path they hit. Caught only because a test failed.
+
+## Post-review #6 ¡X `cachetools.TTLCache` for the redirect cache
+
+`redirect_cache` was an unbounded dict ¡X `7af3eef`. Swapped for `TTLCache(maxsize=10_000, ttl=3600)`. LRU eviction at 10k entries caps memory at ~1 MB even under sustained attack. The 1-hour cache-freshness TTL is independent of the QR's own `expires_at`, which is still re-checked on every hit so a time-limited link 410s the instant it passes expiry (no waiting an hour for the cache to age out).
+
+## Post-review #7 ¡X batched scan-event writes
+
+Hot-path INSERT-then-commit per redirect dominated cost ¡X `9339213`. New flow: `_record_scan` appends to a thread-safe `_pending_scans` list; `_flush_scans_to_db` does one bulk INSERT when either `SCAN_FLUSH_BATCH_SIZE` (default 10) or `SCAN_FLUSH_INTERVAL` (default 5s) is hit. `/analytics` and lifespan-shutdown both force-flush.
+
+Subtle bug found mid-implementation: `_last_flush_time = 0.0` paired with `time.monotonic()` (which returns millions of seconds) made `now - last_flush >= 5s` ALWAYS true. Initialized to `time.monotonic()` at module load instead.
+
+## Post-review #8 ¡X env-driven config
+
+Centralized all knobs in `app/config.py` ¡X `5828a0a`. Module reads `os.environ` once at import; modules that need a value pull from there and re-expose at module scope so tests still monkey-patch one location.
+
+Env vars added: `BASE_URL`, `CREATE_RATE_LIMIT`, `REDIRECT_RATE_LIMIT`, `MUTATION_RATE_LIMIT`, `RATE_LIMIT_STORAGE_URI`, `SCAN_DEDUP_WINDOW`, `SCAN_FLUSH_BATCH_SIZE`, `SCAN_FLUSH_INTERVAL`, plus `DATABASE_URL` and `DEPLOY_ENV` already present. `database.py` now conditionally sets SQLite-only `check_same_thread=False` so Postgres/MySQL URLs work without further changes. `.env.example` checked in.
+
+## Post-review #9 ¡X IDN / punycode homograph fold
+
+`6cb0d97`. The blocklist matched the raw hostname only, so `?vil.com` (Cyrillic `?` U+0435) and `xn--vil-7ka.com` (the punycode form) both bypassed an entry like `evil.com`.
+
+New `_canonical_hostname()`:
+
+1. Decodes each `xn--` label back to Unicode via stdlib `encodings.idna`.
+2. NFKC-normalizes, then folds high-frequency Cyrillic/Greek lookalikes (`?¡÷a`, `?¡÷e`, `?¡÷o`, `?¡÷p`, `?¡÷c`, `?¡÷i`, etc.) using a hand-curated map sourced from Unicode TR39 confusables data.
+
+`is_blocked_domain` now checks both the raw lowercased hostname AND its canonical skeleton. Legitimate IDNs like `¤é¥».jp` pass through (their characters aren't in the homograph map). Production would replace the hand map with `confusable_homoglyphs` for the full TR39 set.
+
+## Post-review #10 ¡X `edit_token` rotation endpoint
+
+`4f68860`. `POST /api/qr/{token}/rotate-edit-token` accepts the current bearer (or the owner-session) and issues a fresh edit_token; the old token's hash is overwritten so it stops authenticating immediately. No admin override and no recovery flow ¡X the credential-shown-once contract is preserved.
+
+---
+
+# User identity layer (Stages D-1 ¡÷ E-2)
+
+The PROMPT.md spec doesn't mention users. We added the layer to support "My QRs" UX, fix the orphan-create UX problem, and have a forensic trail of who-did-what. Five commits, in order.
+
+## D-1 ¡X `feat(auth): magic-link auth core` (`9b2a198`)
+
+New tables: `users`, `user_sessions`, `magic_links`. Four endpoints under `/api/auth`:
+
+- `POST /request-link` ¡X generate magic link, send via configured `EmailService`. Response intentionally vague ("if that email exists, link sent") to avoid enumeration. Rate-limited 3/min/IP.
+- `GET /verify` ¡X consume the link (single-use, 15-min TTL), find-or-create user, set `qrs_session` cookie, 303 to `/`.
+- `GET /me` ¡X current user or null.
+- `POST /logout` ¡X delete session row + clear cookie.
+
+**Session model:** opaque 256-bit random ID stored in `user_sessions`. No JWT ¡X revocation is one DELETE, no denylist needed alongside a signing key.
+
+**Email abstraction:** `EmailService` ABC, `ConsoleEmailService` prints the link to stdout in dev mode. Production routes through a real provider via env var.
+
+**Two non-obvious bugs surfaced and noted in code comments:**
+
+1. **`from __future__ import annotations` + slowapi**: stringified annotations defeated FastAPI's body/query inference under slowapi's wrapper. Removed from `auth_routes.py`.
+2. **`request: Request` must be FIRST** in the route signature when `@limiter.limit` wraps it.
+
+## D-2 ¡X `feat(ui): magic-link sign-in/sign-out` (`3b55eb4`)
+
+UI surface for the D-1 backend: top-right auth bar with two states (anon / signed-in), sign-in modal with email input, logout button.
+
+## D-3 ¡X `feat(ownership): owner_id FK + GET /api/qr/mine` (`0824a1d`)
+
+`url_mappings.owner_id` FK (nullable for back-compat). `create_qr` tags new rows with the user_id if the caller is signed in. `_require_edit_authorization` accepts either the bearer **or** the owner shortcut (session cookie + matching owner_id).
+
+`GET /api/qr/mine` returns the user's owned, non-deleted QRs. Anonymous returns empty list (no 401 ¡X UI uses 200/empty as the "nothing to show" signal).
+
+**Route ordering bug:** `/api/qr/mine` had to be registered BEFORE `/api/qr/{token}` ¡X FastAPI matches in registration order, so `/mine` was getting captured by the path param and 404ing.
+
+UI sidebar lists the user's QRs; clicking one opens the result panel via the owner shortcut.
+
+## E-1 + E-2 ¡X `feat(oauth): GitHub OAuth` (`23c5e66`, `2b70196`)
+
+`oauth_github.py` adds `GET /api/auth/github/{login,callback,available}`. Login redirects to GitHub authorize with a state-cookie CSRF check; callback exchanges the code, fetches `/user` and `/user/emails`, and either:
+
+1. Finds an existing user by `(provider="github", provider_user_id=<gh_id>)` ¡X handles a GitHub-side email change.
+2. Falls back to matching by primary verified email ¡X links an existing magic-link account to the GitHub identity (account merge).
+3. Otherwise creates a new user.
+
+Routes only register when both `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set. UI's "Continue with GitHub" button is gated on `GET /api/auth/github/available` returning 200.
+
+## Auth-required create (`564d3b5` + `cc86237`)
+
+`POST /api/qr/create` rejects anonymous callers with 401. The previous orphan-create UX (an anonymous QR whose only credential is a one-time edit_token) was confusing. UI updated to hide the Create form when signed-out and show a Sign-in CTA instead.
+
+Test surface: default `client` fixture pre-authenticates as `test-runner@example.com` via a real `/api/auth/verify` round-trip (NOT direct DB insert + `cookies.set` ¡X httpx is strict about cookie domain matching for manually-set cookies, and a hand-set cookie with `domain="testserver"` doesn't get sent on subsequent requests). Tests that exercise anonymous behavior call `client.cookies.clear()`.
+
+## edit_token removed from UI (`55b22f1` + `c3624f9`)
+
+The API still issues + accepts `edit_token`, but the UI no longer shows it. Browser users authenticate via the session cookie (owner shortcut); programmatic clients (curl, CI) still use bearer.
+
+This collapsed three months of UX confusion: users were asked to "save this 256-bit token forever" for something they actually didn't need.
+
+# Post-review #11 ¡X `audit_logs` table
+
+`fa63e6c`. Every mutation on a `url_mappings` row writes an `audit_logs` entry: `(mapping_id, user_id, action, before_value, after_value, ip_address, created_at)`. Actions covered:
+
+- `create` ¡X after = normalized URL
+- `patch_url` ¡X before/after = old/new URL strings
+- `patch_expires` ¡X before/after = old/new ISO datetimes
+- `delete` ¡X no values (mapping_id + action is the record)
+- `rotate_edit_token` ¡X no values (logging the hashes would defeat the point of hashing them)
+
+`_log_audit` is called inside each route BEFORE its own commit, so the audit row lands in the same transaction as the mutation it describes ¡X a half-applied change can't end up unaudited. No public read endpoint yet; `GET /api/qr/{token}/audit` is a planned follow-up.
+
+# UI bugs caught only via live browser testing
+
+A theme across `4d926ff` / `1c8a668` / `a56806d` / `ebadd48` / `0cb6ffd` / `8fa6c84`: each is a UX bug that the 84-then-91 in-process pytest suite couldn't catch because they're rendering / state-management issues that need a real browser:
+
+- Sign-in modal stayed visible after the OAuth round-trip ¡X HTML `hidden` attribute outranked by `.modal { display: flex }`.
+- "Update destination" succeeded but sidebar still showed stale `original_url` on a subsequent click.
+- "Create" form stayed visible after submit ¡X `form { display: flex }` outranked HTML `hidden`.
+- Logout left the result panel open with a now-dead "Update" button.
+- "Start over" left a blank page because resetCreateView delegated to refreshAuthState which doesn't run on that path.
+
+The recurring root cause for several of these was the same CSS specificity issue, eventually fixed globally with `[hidden] { display: none !important; }` (`ebadd48`). Saved as a project memory.
+
+Lesson, also recorded as memory: every UI commit needs a real-browser smoke pass before being declared done. Playwright e2e tests are flagged as a follow-up to enforce this without manual labor.
