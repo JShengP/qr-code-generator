@@ -176,6 +176,16 @@ def create_qr(
     # slowapi reads the client IP off `request`; the param must be named
     # `request` for the decorator to find it. We don't otherwise use it
     # here — but it's required to be in the signature.
+    if user is None:
+        # Anonymous create is no longer allowed. The previous behavior
+        # produced an orphan QR whose only owner-equivalent was the
+        # one-time edit_token; that "limbo" state confused users (the
+        # UI offered a Create form without any indication that the
+        # result would be untraceable). Now we require a session.
+        raise HTTPException(
+            status_code=401,
+            detail="Sign in to create QR codes.",
+        )
     try:
         normalized_url = validate_url(req.url)
     except ValueError as e:

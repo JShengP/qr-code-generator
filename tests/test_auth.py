@@ -1,44 +1,21 @@
 """Auth tests: magic-link request → verify → session → me → logout.
 
-We intercept the email send via a capturing fake so the test can grab
-the magic link URL without needing real email infrastructure. The
-session cookie is round-tripped naturally because TestClient stores
-cookies across requests in the same instance.
-"""
-from __future__ import annotations
+We intercept the email send via a capturing fake (conftest.email_capture)
+so the test can grab the magic link URL without real email
+infrastructure. The session cookie is round-tripped naturally because
+TestClient stores cookies across requests in the same instance.
 
+NOTE: the default `client` fixture starts pre-authenticated as
+test-runner@example.com so that POST /api/qr/create (which now
+requires auth) keeps working for the bulk of API tests. Tests in
+this file that exercise the sign-in flow itself call
+`client.cookies.clear()` at the top to start anonymous.
+"""
 from urllib.parse import urlparse, parse_qs
 
 import pytest
 
-from app import email_service as email_module
-from app.email_service import EmailService
 from app.main import app
-
-
-class _CapturingEmailService(EmailService):
-    """Records the email + link instead of printing/sending."""
-
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-
-    def send_magic_link(self, to: str, link_url: str) -> None:
-        self.sent.append((to, link_url))
-
-
-@pytest.fixture
-def email_capture():
-    """Override the email service dependency with a capturing fake.
-
-    The route declares `email_svc: EmailService = Depends(get_email_service)`,
-    and we replace that dependency for the duration of the test.
-    """
-    capture = _CapturingEmailService()
-    app.dependency_overrides[email_module.get_email_service] = lambda: capture
-    yield capture
-    # `client` fixture's teardown clears dependency_overrides, so
-    # cleanup here is belt + suspenders.
-    app.dependency_overrides.pop(email_module.get_email_service, None)
 
 
 def _extract_magic_token(link_url: str) -> str:
@@ -46,7 +23,15 @@ def _extract_magic_token(link_url: str) -> str:
     return qs["token"][0]
 
 
+def _go_anonymous(client) -> None:
+    """Drop the auto-login cookie so the test starts from an anonymous
+    state — necessary for tests that exercise the sign-in flow or that
+    assert anonymous-specific behavior."""
+    client.cookies.clear()
+
+
 def test_request_link_sends_email_and_returns_vague_response(client, email_capture):
+    _go_anonymous(client)
     r = client.post("/api/auth/request-link", json={"email": "alice@example.com"})
     assert r.status_code == 200
     # Response is intentionally vague so it doesn't leak whether the
@@ -63,12 +48,14 @@ def test_request_link_sends_email_and_returns_vague_response(client, email_captu
     ["", "not-an-email", "no@dot", "@nope.com", "a" * 250 + "@example.com"],
 )
 def test_request_link_validates_email(client, email_capture, bad_email):
+    _go_anonymous(client)
     r = client.post("/api/auth/request-link", json={"email": bad_email})
     assert r.status_code == 422
     assert email_capture.sent == []
 
 
 def test_verify_consumes_link_and_sets_session_cookie(client, email_capture):
+    _go_anonymous(client)
     r = client.post("/api/auth/request-link", json={"email": "alice@example.com"})
     assert r.status_code == 200
     token = _extract_magic_token(email_capture.sent[0][1])
@@ -153,6 +140,7 @@ def test_me_returns_user_when_logged_in(client, email_capture):
 
 
 def test_me_returns_null_without_cookie(client):
+    _go_anonymous(client)
     r = client.get("/api/auth/me")
     assert r.status_code == 200
     assert r.json()["user"] is None
@@ -176,32 +164,50 @@ def test_logout_clears_cookie_and_invalidates_session(client, email_capture):
 
 def _login(client, email_capture, email="alice@example.com") -> None:
     """Helper: complete a full magic-link round-trip so subsequent
-    requests on this client are authenticated as `email`."""
+    requests on this client are authenticated as `email`.
+
+    Clears any prior session cookie first (the default `client`
+    fixture auto-logs in as test-runner@example.com; tests that want
+    to be Alice need to overwrite that)."""
+    client.cookies.clear()
     client.post("/api/auth/request-link", json={"email": email})
     token = _extract_magic_token(email_capture.sent[-1][1])
     client.get(f"/api/auth/verify?token={token}", follow_redirects=False)
 
 
+def test_anonymous_create_returns_401(client):
+    """API now requires auth on /api/qr/create."""
+    _go_anonymous(client)
+    r = client.post("/api/qr/create", json={"url": "https://example.com"})
+    assert r.status_code == 401
+    assert "sign in" in r.json()["detail"].lower()
+
+
 def test_my_qrs_empty_when_anonymous(client):
+    _go_anonymous(client)
     r = client.get("/api/qr/mine")
     assert r.status_code == 200
     assert r.json() == {"items": []}
 
 
-def test_my_qrs_lists_only_creates_after_signin(client, email_capture):
-    # Anonymous create — should NOT appear in my-qrs after signin.
-    anon = client.post("/api/qr/create", json={"url": "https://anon.example"})
-    anon_token = anon.json()["token"]
+def test_my_qrs_isolated_between_users(client, email_capture):
+    """A user only sees their own QRs, not other users'."""
+    # client starts as test-runner. Create a QR they own.
+    test_runner_token = client.post(
+        "/api/qr/create", json={"url": "https://test-runner.example"}
+    ).json()["token"]
 
-    _login(client, email_capture)
+    # Switch to Alice
+    _login(client, email_capture, "alice@example.com")
+    alice_token = client.post(
+        "/api/qr/create", json={"url": "https://alice.example"}
+    ).json()["token"]
 
-    owned = client.post("/api/qr/create", json={"url": "https://mine.example"})
-    owned_token = owned.json()["token"]
-
-    r = client.get("/api/qr/mine").json()
-    tokens = {item["token"] for item in r["items"]}
-    assert owned_token in tokens
-    assert anon_token not in tokens
+    # Alice's /mine should NOT contain test-runner's token
+    items = client.get("/api/qr/mine").json()["items"]
+    tokens = {i["token"] for i in items}
+    assert alice_token in tokens
+    assert test_runner_token not in tokens
 
 
 def test_owner_can_patch_without_edit_token(client, email_capture):

@@ -24,6 +24,15 @@ def _auth(edit_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {edit_token}"}
 
 
+def _drop_session(client) -> None:
+    """Drop the auto-login session cookie so PATCH/DELETE/rotate fall
+    through to the bearer-token code path. Without this, the test-runner
+    user is the OWNER of any QR created in the test and the owner
+    shortcut on _require_edit_authorization grants access regardless
+    of what bearer is presented."""
+    client.cookies.clear()
+
+
 # ---------------------------------------------------------------------------
 # PROMPT.md scenarios — these mirror the 8 curl commands in the spec.
 # ---------------------------------------------------------------------------
@@ -361,6 +370,7 @@ def test_get_info_does_not_leak_edit_token(client):
 
 def test_patch_without_auth_returns_401(client):
     token, _edit_token, _ = _create(client)
+    _drop_session(client)
     r = client.patch(f"/api/qr/{token}", json={"url": "https://new.com"})
     assert r.status_code == 401
     assert "Bearer" in r.json()["detail"]
@@ -368,6 +378,7 @@ def test_patch_without_auth_returns_401(client):
 
 def test_patch_with_wrong_token_returns_401(client):
     token, _edit_token, _ = _create(client)
+    _drop_session(client)
     r = client.patch(
         f"/api/qr/{token}",
         json={"url": "https://new.com"},
@@ -379,6 +390,7 @@ def test_patch_with_wrong_token_returns_401(client):
 def test_patch_with_malformed_auth_header_returns_401(client):
     """Authorization without `Bearer ` prefix must be rejected."""
     token, edit_token, _ = _create(client)
+    _drop_session(client)
     r = client.patch(
         f"/api/qr/{token}",
         json={"url": "https://new.com"},
@@ -389,6 +401,7 @@ def test_patch_with_malformed_auth_header_returns_401(client):
 
 def test_delete_without_auth_returns_401(client):
     token, _edit_token, _ = _create(client)
+    _drop_session(client)
     r = client.delete(f"/api/qr/{token}")
     assert r.status_code == 401
 
@@ -396,6 +409,7 @@ def test_delete_without_auth_returns_401(client):
 def test_delete_with_wrong_token_returns_401_and_link_still_works(client):
     """A failed delete attempt must not soft-delete the link."""
     token, _edit_token, _ = _create(client)
+    _drop_session(client)
     r = client.delete(
         f"/api/qr/{token}",
         headers={"Authorization": "Bearer attacker-bearer"},
@@ -408,9 +422,13 @@ def test_delete_with_wrong_token_returns_401_and_link_still_works(client):
 
 
 def test_edit_tokens_isolated_between_tokens(client):
-    """Holder of one edit_token must not be able to PATCH a different token."""
+    """Holder of one edit_token must not be able to PATCH a different token.
+
+    With session-auth the owner shortcut would short-circuit the check —
+    we drop the session so only the bearer path is exercised."""
     _t1, edit_token1, _ = _create(client, "https://a.com")
     t2, _edit_token2, _ = _create(client, "https://b.com")
+    _drop_session(client)
 
     r = client.patch(
         f"/api/qr/{t2}",
@@ -427,6 +445,8 @@ def test_edit_tokens_isolated_between_tokens(client):
 
 def test_rotate_edit_token_returns_new_token_and_invalidates_old(client):
     token, old_edit_token, _ = _create(client)
+    # Test the bearer-only rotation path, not the owner shortcut
+    _drop_session(client)
 
     # Rotate using the old token
     r = client.post(
@@ -452,12 +472,14 @@ def test_rotate_edit_token_returns_new_token_and_invalidates_old(client):
 
 def test_rotate_without_auth_returns_401(client):
     token, _et, _ = _create(client)
+    _drop_session(client)
     r = client.post(f"/api/qr/{token}/rotate-edit-token")
     assert r.status_code == 401
 
 
 def test_rotate_with_wrong_token_returns_401_and_old_still_valid(client):
     token, old_edit_token, _ = _create(client)
+    _drop_session(client)
     r = client.post(
         f"/api/qr/{token}/rotate-edit-token",
         headers={"Authorization": "Bearer attacker-bearer"},
@@ -483,8 +505,11 @@ def test_rotate_unknown_token_returns_404(client):
 
 
 def test_chained_rotation_works(client):
-    """Two rotations in a row: each new token can rotate again."""
+    """Two rotations in a row: each new token can rotate again.
+
+    Tests the bearer-only invalidation chain, not the owner shortcut."""
     token, t1, _ = _create(client)
+    _drop_session(client)
 
     r = client.post(f"/api/qr/{token}/rotate-edit-token", headers=_auth(t1))
     assert r.status_code == 200
