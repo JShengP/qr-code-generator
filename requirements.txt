@@ -3,3 +3,4 @@ uvicorn==0.34.0
 sqlalchemy==2.0.36
 qrcode[pil]==8.0
 slowapi==0.1.9
+cachetools==7.1.1

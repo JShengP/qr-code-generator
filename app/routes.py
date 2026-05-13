@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 
 import qrcode
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import func
@@ -20,9 +21,22 @@ from .url_validator import validate_url
 router = APIRouter()
 
 # In-memory cache (simulates Redis for prototype).
-# Stores (url, expires_at_naive_utc | None) so the redirect handler can
-# evict expired entries on hit instead of serving them past their TTL.
-redirect_cache: dict[str, tuple[str, datetime | None]] = {}
+#
+# Two TTLs are at work here, on purpose:
+#
+# - The TTLCache's own `ttl=3600` is a *cache freshness* bound: entries
+#   are evicted an hour after insertion regardless of QR expiry, so DB
+#   schema changes or rare DB-side mutations are picked up within ≤1 h.
+# - The `(url, expires_at)` value tuple lets the redirect handler also
+#   enforce the QR's own expiry on every hit, independent of the cache
+#   TTL. This is what makes time-limited links 410 the moment they
+#   pass their `expires_at` rather than waiting up to 1 h for the
+#   cache entry to age out.
+#
+# `maxsize=10_000` bounds memory: at ~100 bytes per entry that's ~1 MB
+# resident even under attack. LRU eviction kicks in past the cap, so a
+# warm working set survives while cold tokens get dropped.
+redirect_cache: TTLCache = TTLCache(maxsize=10_000, ttl=3600)
 
 BASE_URL = "http://localhost:8000"
 
