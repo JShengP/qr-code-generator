@@ -79,3 +79,24 @@ class QRSummary(BaseModel):
 
 class MyQRsResponse(BaseModel):
     items: list[QRSummary]
+
+
+# --- Audit log (owner read of /api/qr/{token}/audit) -----------------
+
+
+class AuditEntry(BaseModel):
+    # Action recorded on the mapping: "create" | "patch_url" |
+    # "patch_expires" | "delete" | "rotate_edit_token". Same labels
+    # the writer side in routes.py uses; clients should be tolerant
+    # of new actions appearing in the future.
+    action: str
+    before_value: str | None
+    after_value: str | None
+    created_at: datetime
+
+
+class AuditLogResponse(BaseModel):
+    # Most recent first. Capped server-side at 100 — a full pagination
+    # surface is a future enhancement, not needed for the common case
+    # of "what happened to this QR recently?".
+    items: list[AuditEntry]

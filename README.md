@@ -25,6 +25,7 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 | `DELETE` | `/api/qr/{token}` | **session OR bearer** | Soft delete; row stays in DB, subsequent redirects return 410. Recorded in `audit_logs`. |
 | `GET` | `/api/qr/{token}/image` | none | PNG of the QR code that encodes the short URL. |
 | `GET` | `/api/qr/{token}/analytics` | none | Total scans + scans-by-day breakdown. |
+| `GET` | `/api/qr/{token}/audit` | **owner** | History of every mutation (create / patch / delete / rotate). Readable even after delete; non-owner gets 403. |
 | `POST` | `/api/qr/{token}/rotate-edit-token` | **session OR bearer** | Issue a fresh `edit_token`; old one is invalidated. |
 | `GET` | `/api/qr/mine` | session | List the signed-in user's QRs (anonymous returns empty). |
 

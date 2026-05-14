@@ -18,6 +18,8 @@ from .database import get_db
 from .limiter import limiter
 from .models import AuditLog, ScanEvent, UrlMapping, User
 from .schemas import (
+    AuditEntry,
+    AuditLogResponse,
     CreateRequest,
     CreateResponse,
     MyQRsResponse,
@@ -443,6 +445,63 @@ def get_analytics(token: str, db: Session = Depends(get_db)):
         "total_scans": total,
         "scans_by_day": [{"date": str(row.date), "count": row.count} for row in daily],
     }
+
+
+@router.get("/api/qr/{token}/audit", response_model=AuditLogResponse)
+def get_qr_audit(
+    token: str,
+    db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
+):
+    """Return the owner-visible audit trail for this QR.
+
+    Owner-only by design — the trail reveals when destinations were
+    changed and to what, which is sensitive enough that we won't
+    hand it out anonymously. Anonymous → 401, non-owner → 403.
+
+    Looks up the mapping WITHOUT `_get_mapping_or_404` (which 404s
+    soft-deleted rows): the audit trail is more useful AFTER a
+    delete, not less, so we read deleted mappings here too. A
+    genuinely unknown token still 404s.
+
+    Capped at 100 most-recent entries server-side. A full
+    pagination surface is a future enhancement.
+    """
+    if user is None:
+        raise HTTPException(
+            status_code=401, detail="Sign in to view a QR's audit log."
+        )
+
+    mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
+    if mapping is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if mapping.owner_id != user.id:
+        # Don't leak the existence of someone else's QR — same 403
+        # whether the row exists or not, so the audit endpoint can't
+        # be used as a token-existence oracle for cross-user probing.
+        raise HTTPException(
+            status_code=403, detail="This QR's audit log is owner-only."
+        )
+
+    rows = (
+        db.query(AuditLog)
+        .filter(AuditLog.mapping_id == mapping.id)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(100)
+        .all()
+    )
+    return AuditLogResponse(
+        items=[
+            AuditEntry(
+                action=r.action,
+                before_value=r.before_value,
+                after_value=r.after_value,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+    )
 
 
 def _get_mapping_or_404(token: str, db: Session) -> UrlMapping:
