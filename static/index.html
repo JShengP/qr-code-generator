@@ -171,6 +171,28 @@
       <div id="edit-status" class="alert alert-ok" hidden></div>
       <div id="edit-error" class="alert alert-error" hidden></div>
 
+      <!-- Analytics: scans this QR has received, with a simple
+           horizontal bar chart per day. The endpoint is public so
+           non-owners would see this too — only the audit timeline
+           below is owner-gated. -->
+      <section id="analytics-panel" class="qr-subpanel">
+        <h3>Analytics</h3>
+        <p class="qr-subpanel-summary">
+          <strong id="analytics-total">0</strong>
+          <span class="hint">total scans</span>
+        </p>
+        <ul id="analytics-chart" class="analytics-chart"></ul>
+      </section>
+
+      <!-- History: the audit_log trail. Read endpoint is owner-only,
+           so anonymous users wouldn't see anything (they can't get
+           to this panel anyway since create is gated). Refreshed
+           after every Update / Delete. -->
+      <section id="history-panel" class="qr-subpanel">
+        <h3>History</h3>
+        <ol id="audit-timeline" class="audit-timeline"></ol>
+      </section>
+
       <footer class="result-footer">
         <button type="button" id="delete-qr" class="danger" title="Soft-delete this QR. The row stays in the audit log; the redirect becomes 410.">
           Delete this QR

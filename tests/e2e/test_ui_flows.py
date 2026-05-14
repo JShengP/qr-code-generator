@@ -147,6 +147,44 @@ def test_start_over_returns_to_create_form(signed_in_page):
 # ---------------------------------------------------------------------
 
 
+def test_history_and_analytics_panels_populate_after_create(signed_in_page):
+    """Fresh-create should yield one Created entry in History and 0
+    scans in Analytics. After a PATCH, History gains a
+    "Changed destination" entry."""
+    page, _ = signed_in_page
+
+    page.locator("#url-input").fill("https://example.com")
+    page.locator("#create-form button[type=submit]").click()
+    page.locator("#result").wait_for(state="visible")
+
+    # Analytics shows 0 total scans
+    page.locator("#analytics-total").wait_for(state="visible")
+    assert page.locator("#analytics-total").text_content().strip() == "0"
+
+    # History shows one "Created" entry
+    timeline_items = page.locator("#audit-timeline li")
+    # Wait for the loading placeholder to be replaced
+    page.wait_for_function(
+        "() => !document.querySelector('#audit-timeline li.empty')"
+    )
+    assert timeline_items.count() == 1
+    first_entry = timeline_items.first.locator(".action").text_content()
+    assert "Created" in first_entry
+
+    # PATCH adds a history entry
+    page.locator("#new-url-input").fill("https://updated.example")
+    page.locator("#edit-form button[type=submit]").click()
+    page.locator("#edit-status").wait_for(state="visible")
+
+    # Wait for history to refresh past 1 entry
+    page.wait_for_function(
+        "() => document.querySelectorAll('#audit-timeline li').length >= 2"
+    )
+    actions = page.locator("#audit-timeline li .action").all_text_contents()
+    assert any("Changed destination" in a for a in actions)
+    assert any("Created" in a for a in actions)
+
+
 def test_logout_clears_result_panel_and_shows_signin_prompt(signed_in_page):
     page, _ = signed_in_page
 

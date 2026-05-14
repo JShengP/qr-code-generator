@@ -116,6 +116,10 @@ editForm.addEventListener("submit", async (event) => {
     // sidebar reloads the stale `item.original_url` into the result
     // panel and the user thinks the change reverted.
     refreshMyQRs();
+    // History gained a new entry (patch_url and/or patch_expires);
+    // analytics is unchanged but we refresh anyway to keep both
+    // panels in sync with the server's view.
+    refreshAuditTimeline(currentToken);
   } catch (err) {
     showEditError(`Network error: ${err.message}`);
   }
@@ -189,6 +193,11 @@ function renderResult(data) {
   createForm.hidden = true;
   resultPanel.hidden = false;
   hideEditFeedback();
+  // Kick off the secondary fetches (analytics + audit). Fresh QR
+  // means 0 scans + 1 "create" audit row, but rendering them keeps
+  // the layout consistent across fresh-create and sidebar-open paths.
+  refreshAnalytics(data.token);
+  refreshAuditTimeline(data.token);
 }
 
 function showError(msg) {
@@ -216,6 +225,124 @@ function showEditError(msg) {
 function hideEditFeedback() {
   editStatus.hidden = true;
   editError.hidden = true;
+}
+
+// ---------------------------------------------------------------------
+// History timeline + Analytics chart (lazy-loaded into the result panel).
+// ---------------------------------------------------------------------
+
+const _FRIENDLY_ACTION = {
+  create: "Created",
+  patch_url: "Changed destination",
+  patch_expires: "Updated expiration",
+  delete: "Deleted",
+  rotate_edit_token: "Rotated edit token",
+};
+
+async function refreshAuditTimeline(token) {
+  const list = $("audit-timeline");
+  list.innerHTML = '<li class="empty">Loading history…</li>';
+  try {
+    const r = await fetch(`/api/qr/${token}/audit`, {
+      credentials: "same-origin",
+    });
+    if (!r.ok) {
+      // 403 (not owner) or 401 (no session) — show nothing
+      // intentionally; we don't want to leak the trail.
+      list.innerHTML = '<li class="empty">History unavailable.</li>';
+      return;
+    }
+    const items = (await r.json()).items;
+    if (items.length === 0) {
+      list.innerHTML = '<li class="empty">No history yet.</li>';
+      return;
+    }
+    list.innerHTML = "";
+    for (const e of items) {
+      // Server stores naive UTC; the trailing "Z" makes Date parse
+      // it as UTC, then toLocaleString renders in the browser's TZ.
+      const t = new Date(e.created_at + "Z").toLocaleString();
+      const label = _FRIENDLY_ACTION[e.action] || e.action;
+
+      const li = document.createElement("li");
+
+      const time = document.createElement("time");
+      time.textContent = t;
+      const action = document.createElement("span");
+      action.className = "action";
+      action.textContent = label;
+
+      li.appendChild(time);
+      li.appendChild(action);
+
+      if (e.before_value || e.after_value) {
+        const diff = document.createElement("div");
+        diff.className = "diff";
+        if (e.before_value) {
+          const before = document.createElement("span");
+          before.className = "before";
+          before.textContent = e.before_value;
+          diff.appendChild(before);
+          const arrow = document.createElement("span");
+          arrow.className = "arrow";
+          arrow.textContent = "→";
+          diff.appendChild(arrow);
+        }
+        if (e.after_value) {
+          const after = document.createElement("span");
+          after.className = "after";
+          after.textContent = e.after_value;
+          diff.appendChild(after);
+        }
+        li.appendChild(diff);
+      }
+      list.appendChild(li);
+    }
+  } catch {
+    list.innerHTML = '<li class="empty">Failed to load history.</li>';
+  }
+}
+
+async function refreshAnalytics(token) {
+  const chart = $("analytics-chart");
+  chart.innerHTML = '<li class="empty">Loading…</li>';
+  $("analytics-total").textContent = "—";
+  try {
+    const r = await fetch(`/api/qr/${token}/analytics`, {
+      credentials: "same-origin",
+    });
+    if (!r.ok) {
+      chart.innerHTML = '<li class="empty">Analytics unavailable.</li>';
+      return;
+    }
+    const data = await r.json();
+    $("analytics-total").textContent = data.total_scans;
+
+    if (data.scans_by_day.length === 0) {
+      chart.innerHTML = '<li class="empty">No scans yet.</li>';
+      return;
+    }
+    const max = Math.max(...data.scans_by_day.map((d) => d.count));
+    chart.innerHTML = "";
+    for (const d of data.scans_by_day) {
+      const li = document.createElement("li");
+      const date = document.createElement("span");
+      date.className = "date";
+      date.textContent = d.date;
+      const bar = document.createElement("span");
+      bar.className = "bar";
+      bar.style.width = `${(d.count / max) * 100}%`;
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = d.count;
+      li.appendChild(date);
+      li.appendChild(bar);
+      li.appendChild(count);
+      chart.appendChild(li);
+    }
+  } catch {
+    chart.innerHTML = '<li class="empty">Failed to load analytics.</li>';
+  }
 }
 
 // Pydantic 422s come back as { detail: [{loc, msg, ...}, ...] };
@@ -344,6 +471,8 @@ function openOwnedQR(item) {
   $("create-form").hidden = true;
   $("result").hidden = false;
   hideEditFeedback();
+  refreshAnalytics(item.token);
+  refreshAuditTimeline(item.token);
 }
 
 $("login-btn").addEventListener("click", openLoginModal);

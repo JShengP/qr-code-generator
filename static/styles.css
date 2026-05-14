@@ -451,3 +451,111 @@ button.tertiary:hover {
  * for the per-QR edit_token UI; both were removed when we hid
  * edit_token from the user-facing surface. The API still issues +
  * accepts the token for programmatic clients.) */
+
+/* ---------- History timeline + analytics chart (result panel) ----- */
+
+.qr-subpanel {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.qr-subpanel h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.qr-subpanel-summary {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+}
+
+.qr-subpanel-summary strong {
+  color: var(--accent);
+  font-size: 1.1rem;
+  margin-right: 0.4rem;
+}
+
+/* Horizontal-bar daily-scan chart. Each <li> is `date | bar | count`. */
+.analytics-chart, .audit-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.analytics-chart li {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr 2.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.analytics-chart .date {
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+}
+
+.analytics-chart .bar {
+  height: 0.85rem;
+  background: linear-gradient(to right, var(--accent), var(--accent-hover));
+  border-radius: 3px;
+  min-width: 4px;
+}
+
+.analytics-chart .count {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-chart .empty, .audit-timeline .empty {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  padding: 0.5rem 0;
+}
+
+/* Timeline: vertical-stack of (time, action, before -> after) rows */
+.audit-timeline li {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.8rem;
+}
+
+.audit-timeline li:last-child { border-bottom: none; }
+
+.audit-timeline time {
+  color: var(--text-dim);
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  font-size: 0.75rem;
+}
+
+.audit-timeline .action {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.audit-timeline .diff {
+  grid-column: 2;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  word-break: break-all;
+}
+
+.audit-timeline .diff .before {
+  text-decoration: line-through;
+  margin-right: 0.4rem;
+}
+
+.audit-timeline .diff .arrow {
+  margin-right: 0.4rem;
+}
+
+.audit-timeline .diff .after {
+  color: var(--accent);
+}
