@@ -125,34 +125,37 @@ editForm.addEventListener("submit", async (event) => {
   }
 });
 
-// Delete button — lives in the result-footer.
-$("delete-qr").addEventListener("click", async () => {
-  if (!currentToken) return;
+// Delete is now per-row in the sidebar — see `_deleteFromSidebar`
+// inside refreshMyQRs(). There's no global Delete button anymore.
+
+async function _deleteFromSidebar(item) {
   const ok = confirm(
-    "Delete this QR? Subsequent scans will return HTTP 410. The row " +
-    "stays in the database and the action is recorded in audit_logs " +
+    `Delete ${item.token}? Subsequent scans will return HTTP 410. The ` +
+    "row stays in the database and the action is recorded in audit_logs " +
     "(soft-delete, not erased)."
   );
   if (!ok) return;
 
   try {
-    const resp = await fetch(`/api/qr/${currentToken}`, {
+    const resp = await fetch(`/api/qr/${item.token}`, {
       method: "DELETE",
       credentials: "same-origin",
     });
     if (!resp.ok) {
-      const body = await resp.json().catch(() => ({ detail: resp.statusText }));
-      showEditError(formatError(body, resp.status));
+      alert(`Delete failed: HTTP ${resp.status}`);
       return;
     }
-    // Back to a clean Create view; sidebar refreshes to drop the deleted row.
-    resetCreateView();
+    // If the QR we just deleted is the one currently open in the
+    // result panel, close the panel — otherwise the UI lies about
+    // what's editable.
+    if (currentToken === item.token) {
+      resetCreateView();
+    }
     refreshMyQRs();
-    $("url-input").focus();
   } catch (err) {
-    showEditError(`Network error: ${err.message}`);
+    alert(`Network error: ${err.message}`);
   }
-});
+}
 
 $("reset").addEventListener("click", () => {
   // No "did you save edit_token?" prompt needed — the UI doesn't
@@ -440,19 +443,38 @@ async function refreshMyQRs() {
     empty.hidden = true;
     for (const item of data.items) {
       const li = document.createElement("li");
+
+      // Click-target column: token + destination. Held inside its
+      // own <div> so the × button can sit next to it without being
+      // part of the click area that opens the QR.
+      const main = document.createElement("div");
+      main.className = "qr-row";
       const tokenSpan = document.createElement("span");
       tokenSpan.className = "token";
       tokenSpan.textContent = item.token;
       const destSpan = document.createElement("span");
       destSpan.className = "destination";
       destSpan.textContent = item.original_url;
-      li.appendChild(tokenSpan);
-      li.appendChild(destSpan);
-      // Click a list item to "open" it in the result panel as if you
-      // had just created it. We don't have the edit_token (it's
-      // gone forever after create), so PATCH/DELETE will go through
-      // the owner shortcut on the API.
-      li.addEventListener("click", () => openOwnedQR(item));
+      main.appendChild(tokenSpan);
+      main.appendChild(destSpan);
+      main.addEventListener("click", () => openOwnedQR(item));
+
+      // Per-row × delete button. Hidden by default, revealed on
+      // row hover via CSS; stops propagation so clicking it doesn't
+      // also trigger the row's openOwnedQR handler.
+      const delBtn = document.createElement("button");
+      delBtn.className = "qr-row-delete";
+      delBtn.type = "button";
+      delBtn.title = `Delete ${item.token}`;
+      delBtn.setAttribute("aria-label", `Delete ${item.token}`);
+      delBtn.textContent = "×";
+      delBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        _deleteFromSidebar(item);
+      });
+
+      li.appendChild(main);
+      li.appendChild(delBtn);
       list.appendChild(li);
     }
   } catch {

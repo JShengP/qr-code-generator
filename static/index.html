@@ -195,10 +195,10 @@
       </section>
 
       <footer class="result-footer">
-        <button type="button" id="delete-qr" class="danger" title="Soft-delete this QR. The row stays in the audit log; the redirect becomes 410.">
-          Delete this QR
-        </button>
-        <button type="button" id="reset" class="tertiary" title="Discard this QR's edit context and start a fresh one">
+        <!-- Delete moved to the sidebar (× icon on each My-QRs row).
+             Destructive actions don't belong next to the "go back"
+             button — they belong on the item you're targeting. -->
+        <button type="button" id="reset" class="tertiary" title="Go back to the Create form; this QR is unchanged.">
           ← Start over with a new QR
         </button>
       </footer>

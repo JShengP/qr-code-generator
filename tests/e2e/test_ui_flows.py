@@ -107,10 +107,12 @@ def test_full_create_edit_delete_lifecycle(signed_in_page):
     item_text = sidebar_items.first.text_content()
     assert "new-target.example" in item_text
 
-    # --- Delete -----------------------------------------------------
-    # confirm() returns true via accept_dialog
+    # --- Delete from sidebar's × button ---------------------------
+    # The × is opacity:0 by default and reveals on hover; Playwright
+    # requires `force=True` because it considers opacity:0 elements
+    # "not actionable" otherwise. We accept the confirm() dialog.
     page.on("dialog", lambda dialog: dialog.accept())
-    page.locator("#delete-qr").click()
+    sidebar_items.first.locator(".qr-row-delete").click(force=True)
 
     # Back to create form, sidebar empty
     page.locator("#create-form").wait_for(state="visible")

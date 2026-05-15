@@ -167,11 +167,12 @@ button.secondary:hover { background: #364555; }
   padding-top: 1.25rem;
   border-top: 1px dashed var(--border);
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
+  justify-content: center;
 }
 
+/* .danger style retained — currently unused (delete moved to
+ * sidebar's × per-row button), but kept for future destructive
+ * primaries (e.g. account-delete confirm). */
 button.danger {
   background: transparent;
   color: var(--error);
@@ -274,11 +275,19 @@ button.tertiary:hover {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.8rem;
-  cursor: pointer;
   transition: border-color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .my-qrs li:hover { border-color: var(--accent); }
+
+.my-qrs li .qr-row {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
 
 .my-qrs li .token {
   font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
@@ -293,6 +302,31 @@ button.tertiary:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.my-qrs .qr-row-delete {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  padding: 0;
+  width: 1.4rem;
+  height: 1.4rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  border-radius: 4px;
+  transition: opacity 0.15s, color 0.15s, background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.my-qrs li:hover .qr-row-delete { opacity: 0.8; }
+
+.my-qrs .qr-row-delete:hover {
+  opacity: 1;
+  color: var(--error);
+  border-color: var(--error);
+  background: var(--error-bg);
 }
 
 @media (max-width: 900px) {
