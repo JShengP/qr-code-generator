@@ -148,16 +148,14 @@
         <label for="new-url-input">Change destination</label>
         <p class="hint">
           Same QR, new target. The short URL is fixed once printed; updating
-          here re-points it at a new destination on the next scan.
+          here re-points it at a new destination on the next scan. Either
+          field may be filled (or both); blank = leave unchanged.
         </p>
-        <div class="row">
-          <input
-            id="new-url-input"
-            type="url"
-            placeholder="https://new-destination.example/"
-          />
-          <button type="submit">Update</button>
-        </div>
+        <input
+          id="new-url-input"
+          type="url"
+          placeholder="https://new-destination.example/ (leave blank to keep current)"
+        />
         <label for="edit-expires-input">
           Expires at <span class="hint">(leave blank to keep current)</span>
         </label>
@@ -166,6 +164,9 @@
           type="datetime-local"
           autocomplete="off"
         />
+        <!-- One Update button submits whatever's filled in. The
+             handler builds a PATCH body from non-blank fields only. -->
+        <button type="submit">Update</button>
       </form>
 
       <div id="edit-status" class="alert alert-ok" hidden></div>
