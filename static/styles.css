@@ -172,12 +172,21 @@ button.secondary:hover { background: #364555; }
   gap: 0.75rem;
 }
 
-/* Both footer buttons share half the row equally so they look
- * balanced regardless of label length, and `white-space: nowrap`
- * stops "Delete this QR" from wrapping to two lines when the
- * container is narrow. */
+/* Both footer buttons share half the row equally AND share an
+ * identical box model (padding/border/font/line-height) so the
+ * .danger vs .tertiary classes only differ in color. Without this
+ * explicit reset, font-weight 500 (.danger) vs 400 (.tertiary)
+ * + browser font-metric quirks produce a visible 1-2 px height
+ * mismatch even with align-items: stretch. */
 .result-footer > button {
   flex: 1;
+  padding: 0.55rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.4;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 6px;
   white-space: nowrap;
   text-align: center;
 }
