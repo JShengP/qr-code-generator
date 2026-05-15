@@ -173,12 +173,16 @@ button.secondary:hover { background: #364555; }
 }
 
 /* Both footer buttons share half the row equally AND share an
- * identical box model (padding/border/font/line-height) so the
- * .danger vs .tertiary classes only differ in color. Without this
- * explicit reset, font-weight 500 (.danger) vs 400 (.tertiary)
- * + browser font-metric quirks produce a visible 1-2 px height
- * mismatch even with align-items: stretch. */
-.result-footer > button {
+ * identical box model so .danger vs .tertiary only differ in color.
+ *
+ * Selector deliberately compound (`> button.danger, > button.tertiary`)
+ * instead of `> button` so specificity is (0,2,1) — beats the
+ * standalone `button.danger { padding: ... }` and
+ * `button.tertiary { padding: ... }` rules (both 0,1,1) regardless
+ * of source order. Caught via DevTools showing the .danger padding
+ * still winning even though our rule appeared earlier in the file. */
+.result-footer > button.danger,
+.result-footer > button.tertiary {
   flex: 1;
   padding: 0.55rem 1rem;
   font-size: 0.85rem;
