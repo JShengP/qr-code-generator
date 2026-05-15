@@ -120,6 +120,43 @@ def test_full_create_edit_delete_lifecycle(signed_in_page):
     assert sidebar_items.count() == 0
 
 
+def test_current_expires_field_updates_after_patch(signed_in_page):
+    """Regression for the bug spotted via visual inspection: PATCHing
+    only `expires_at` worked end-to-end (DB updated, audit_log entry,
+    History timeline showed it) but the top-of-panel info section had
+    no `Expires at` field, so the user couldn't tell what they'd set
+    without scrolling to History. Lock the new field's render in."""
+    page, _ = signed_in_page
+
+    # Fresh QR, no expiry yet.
+    page.locator("#url-input").fill("https://example.com")
+    page.locator("#create-form button[type=submit]").click()
+    page.locator("#result").wait_for(state="visible")
+
+    # Initial: no expiry -> "(never)" placeholder, not blank.
+    assert page.locator("#current-expires").input_value() == "(never)"
+
+    # PATCH expires only. datetime-local format is "YYYY-MM-DDTHH:MM".
+    page.locator("#edit-expires-input").fill("2099-12-31T23:59")
+    page.locator("#edit-form button[type=submit]").click()
+    page.locator("#edit-status").wait_for(state="visible")
+
+    # Top field reflects the new value. Locale + timezone formatting
+    # both vary by where the test runs (UTC vs UTC+8 turns
+    # `2099-12-31T23:59` into either Dec 31 2099 or Jan 1 2100), so
+    # we just assert "no longer the empty placeholder, contains a
+    # 4-digit year" — that's enough to lock the regression.
+    import re as _re
+
+    expires_text = page.locator("#current-expires").input_value()
+    assert expires_text != "(never)"
+    assert expires_text != ""
+    assert _re.search(r"\b(2099|2100)\b", expires_text), (
+        f"Expected the new expiry (2099 or 2100 depending on TZ) "
+        f"to surface in #current-expires, got: {expires_text!r}"
+    )
+
+
 def test_sidebar_x_button_deletes_qr(signed_in_page):
     """Alternative delete path: click × on a My-QRs row instead of
     opening the QR and using the result-panel Delete."""
