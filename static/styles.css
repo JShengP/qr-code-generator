@@ -195,6 +195,24 @@ button.secondary:hover { background: #364555; }
   text-align: center;
 }
 
+/* Subtle tinted backgrounds so neither button is pure transparent;
+ * each picks up the hue of its own border so the semantics stay
+ * obvious (red = destructive, neutral = navigational). Specificity
+ * (0,2,1) still wins over the bare .danger / .tertiary rules. */
+.result-footer > button.danger {
+  background: rgba(255, 107, 107, 0.08);
+}
+.result-footer > button.danger:hover {
+  background: var(--error-bg);
+}
+
+.result-footer > button.tertiary {
+  background: rgba(255, 255, 255, 0.04);
+}
+.result-footer > button.tertiary:hover {
+  background: #364555;
+}
+
 button.danger {
   background: transparent;
   color: var(--error);
