@@ -125,19 +125,20 @@ editForm.addEventListener("submit", async (event) => {
   }
 });
 
-// Delete is now per-row in the sidebar — see `_deleteFromSidebar`
-// inside refreshMyQRs(). There's no global Delete button anymore.
-
-async function _deleteFromSidebar(item) {
+// Two entry points share this helper:
+//   - the sidebar × button on each My-QRs row (item.token known)
+//   - the big "Delete this QR" button in the result-panel footer
+//     (acts on currentToken, the open mapping)
+async function _softDeleteQR(token) {
   const ok = confirm(
-    `Delete ${item.token}? Subsequent scans will return HTTP 410. The ` +
+    `Delete ${token}? Subsequent scans will return HTTP 410. The ` +
     "row stays in the database and the action is recorded in audit_logs " +
     "(soft-delete, not erased)."
   );
   if (!ok) return;
 
   try {
-    const resp = await fetch(`/api/qr/${item.token}`, {
+    const resp = await fetch(`/api/qr/${token}`, {
       method: "DELETE",
       credentials: "same-origin",
     });
@@ -145,10 +146,9 @@ async function _deleteFromSidebar(item) {
       alert(`Delete failed: HTTP ${resp.status}`);
       return;
     }
-    // If the QR we just deleted is the one currently open in the
-    // result panel, close the panel — otherwise the UI lies about
-    // what's editable.
-    if (currentToken === item.token) {
+    // If we just deleted the QR open in the result panel, reset
+    // the view — otherwise the UI lies about what's editable.
+    if (currentToken === token) {
       resetCreateView();
     }
     refreshMyQRs();
@@ -156,6 +156,13 @@ async function _deleteFromSidebar(item) {
     alert(`Network error: ${err.message}`);
   }
 }
+
+// Result-panel "Delete this QR" button. Same flow as sidebar ×,
+// acting on the QR currently open in the result panel.
+$("delete-qr").addEventListener("click", () => {
+  if (!currentToken) return;
+  _softDeleteQR(currentToken);
+});
 
 $("reset").addEventListener("click", () => {
   // No "did you save edit_token?" prompt needed — the UI doesn't
@@ -470,7 +477,7 @@ async function refreshMyQRs() {
       delBtn.textContent = "×";
       delBtn.addEventListener("click", (event) => {
         event.stopPropagation();
-        _deleteFromSidebar(item);
+        _softDeleteQR(item.token);
       });
 
       li.appendChild(main);

@@ -107,18 +107,43 @@ def test_full_create_edit_delete_lifecycle(signed_in_page):
     item_text = sidebar_items.first.text_content()
     assert "new-target.example" in item_text
 
-    # --- Delete from sidebar's × button ---------------------------
-    # The × is opacity:0 by default and reveals on hover; Playwright
-    # requires `force=True` because it considers opacity:0 elements
-    # "not actionable" otherwise. We accept the confirm() dialog.
+    # --- Delete via the result-panel button. -----------------------
+    # (The sidebar × is the alternative path, covered by a separate
+    # test below.)
     page.on("dialog", lambda dialog: dialog.accept())
-    sidebar_items.first.locator(".qr-row-delete").click(force=True)
+    page.locator("#delete-qr").click()
 
     # Back to create form, sidebar empty
     page.locator("#create-form").wait_for(state="visible")
     assert not page.locator("#result").is_visible()
     page.wait_for_timeout(200)
     assert sidebar_items.count() == 0
+
+
+def test_sidebar_x_button_deletes_qr(signed_in_page):
+    """Alternative delete path: click × on a My-QRs row instead of
+    opening the QR and using the result-panel Delete."""
+    page, _ = signed_in_page
+
+    page.locator("#url-input").fill("https://example.com")
+    page.locator("#create-form button[type=submit]").click()
+    page.locator("#result").wait_for(state="visible")
+
+    sidebar_items = page.locator("#my-qrs-list li")
+    sidebar_items.first.wait_for(state="visible")
+    assert sidebar_items.count() == 1
+
+    # opacity:0 until hover; force=True bypasses Playwright's
+    # actionability check.
+    page.on("dialog", lambda dialog: dialog.accept())
+    sidebar_items.first.locator(".qr-row-delete").click(force=True)
+
+    page.wait_for_timeout(200)
+    assert sidebar_items.count() == 0
+    # Currently-open QR was the one we deleted; result panel must
+    # have been reset.
+    assert not page.locator("#result").is_visible()
+    assert page.locator("#create-form").is_visible()
 
 
 # ---------------------------------------------------------------------
