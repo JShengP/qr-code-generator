@@ -67,6 +67,118 @@ The corresponding `Authorization`-free endpoints (everything in the
 [README endpoints table](../README.md#endpoints) marked `none` for
 auth) work over plain `curl` without any header.
 
+## Security model
+
+### The pattern is industry-standard
+
+What we do is the same pattern several widely-used systems use for
+their access tokens:
+
+| System | Storage | Lost it? |
+|---|---|---|
+| GitHub Personal Access Token | server stores hash only | revoke + regenerate |
+| AWS Secret Access Key | shown ONCE at create time | rotate (new key replaces) |
+| Stripe API key (Live) | hash stored server-side | roll the key |
+| Cloudflare API Token | shown ONCE | regenerate |
+| **edit_token here** | SHA-256 hash in `url_mappings.edit_token_hash` | rotate via UI or API |
+
+So **256-bit CSPRNG plaintext + single-round SHA-256 hash + one-time
+display + rotate-to-recover** is a well-tested shape, not an
+invention.
+
+### Why SHA-256 instead of bcrypt / argon2
+
+A common pushback: "shouldn't password-style hashes be used here for
+defense in depth?" The honest answer is no, and writing it out:
+
+- `bcrypt` / `argon2` exist to slow down brute force against
+  **low-entropy** inputs (`letmein123`-class passwords).
+- The token is **256 bits drawn from the OS CSPRNG**
+  (`secrets.token_urlsafe(32)`). Brute-forcing it is 2²⁵⁶ trial
+  hashes — physically infeasible regardless of the per-attempt
+  hash cost.
+- Slowing per-attempt hashing from SHA-256 (~100 ns) to bcrypt
+  (~100 ms) buys 0 real security here and adds ~100 ms latency to
+  every legitimate API call. That trade only makes sense when
+  per-attempt cost is the bottleneck — for high-entropy random
+  tokens, it isn't.
+
+Full reasoning in [`DECISIONS.md` → "Post-review #3"](../DECISIONS.md).
+
+### What the design defends against
+
+| Threat | Defended? | How |
+|---|---|---|
+| **DB dump leak** | ✅ | Plaintext token never stored. Hash alone is unusable — no rainbow table for 256-bit random preimages. |
+| **Timing attack on the comparison** | ✅ | `hmac.compare_digest` runs in constant time. |
+| **Token in server logs / backups** | ✅ | Only the hash ever lands on disk. |
+| **Brute force via the API** | ✅ | Mutation endpoints rate-limited (`30/minute/IP`) on top of the cryptographic infeasibility. |
+| **Forensic gap after misuse** | ✅ | `audit_logs` records every PATCH / DELETE / rotate with IP, timestamp, and before/after values. |
+
+### What the design does NOT defend against
+
+Being honest about it matters more than pretending it covers
+everything:
+
+| Threat | Status | Notes |
+|---|---|---|
+| **Token sniffed in transit** | ❌ | Plain HTTP exposes the bearer to any device on the same network. Production deployment MUST use HTTPS. |
+| **Token escapes via the user side** (screenshot, paste in chat, push to a public git repo, browser autofill DB stolen) | ❌ | Same as every bearer credential ever. User responsibility. |
+| **Phishing** (user pasting the token into a malicious form) | ❌ | Standard credential phishing risk. No technical defense possible. |
+| **Server compromise while running** | ❌ | An attacker on the running process can read inbound bearers in cleartext. Same as any HTTP API. |
+| **Session-cookie theft → attacker calls rotate** | ❌ | If a signed-in session is stolen, the attacker can rotate the QR's bearer and lock the real owner out. Session security (HttpOnly + Secure + SameSite) does what it can; that's a session-auth problem, not a token-storage problem. |
+| **No token expiration** | ❌ | Once issued, a token is valid forever until rotated. Stripe / GitHub PAT offer optional expiry; we don't. See "Possible hardenings" below. |
+
+### Production deployment checklist (must-do)
+
+Three non-negotiables before exposing this service to real users:
+
+1. **HTTPS everywhere.** Run behind a TLS-terminating reverse proxy
+   (fly.io, Render, Cloudflare, Nginx + certbot). HTTP-only deployment
+   makes the entire bearer model leak by design.
+2. **Session cookie's `Secure` flag.** The app already sets `secure=True`
+   when `DEPLOY_ENV=production` — confirm that env var is set on the
+   production host.
+3. **`X-Forwarded-For` parsing.** Behind a reverse proxy,
+   `request.client.host` is the proxy's IP, so the rate-limit
+   bucket and audit-log `ip_address` collapse all real users to one
+   row. Configure slowapi's `key_func` and audit's IP source to
+   read the forwarded header. Currently noted as a follow-up in
+   [`DECISIONS.md` "Stage 7 known limitations"](../DECISIONS.md).
+
+### Possible hardenings (optional, not in scope yet)
+
+Each item is a real improvement; whether to add it depends on the
+threat model for the deployment:
+
+| Hardening | Comparable to | Effort |
+|---|---|---|
+| `expires_at` on `url_mappings.edit_token_hash` (auto-revoke after N days, default 90) | GitHub PAT optional expiry | ~30 min |
+| Multiple active tokens per QR with optional `name` labels ("cron", "ci", "phone") | AWS allows 2 simultaneous access keys for zero-downtime rotation | ~1 hr |
+| Optional IP allowlist per token (only accept Bearer from listed CIDRs) | Cloudflare API tokens | ~30 min |
+| Re-confirm-by-email when rotating a token for a long-active QR | GitHub PAT step-up for sensitive ops | ~1 hr |
+| `audit_logs.user_agent` column for stronger forensics | GitHub audit log | ~10 min |
+
+### Practical advice for end users (paste this into the modal copy or your own README)
+
+> The edit token is like a key to one specific QR code. We never keep
+> a copy — what's in the database is just the shape of the key (a
+> SHA-256 hash). If you lose it, we can't make another that looks the
+> same; you can only cut a fresh key (rotate), which automatically
+> retires the old one.
+>
+> The moment you click Generate is your only chance to record it.
+> Practical tips:
+>
+> - Paste it into a password manager (1Password, Bitwarden, etc.) or
+>   into the secret store of your CI / cron host (GitHub Actions
+>   secrets, AWS Secrets Manager, `.env` not committed to git).
+> - Never paste it into Slack, Discord, an email, or any commit message.
+> - When using it from a script, always send it over HTTPS — over plain
+>   HTTP anyone on the network can read it.
+> - If you suspect it leaked, immediately Generate a new token. The
+>   old one stops working the instant the new one is issued.
+
 ## FAQ
 
 ### What if I lose the token?
