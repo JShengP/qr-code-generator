@@ -472,14 +472,14 @@ button.tertiary:hover {
 
 .row input { flex: 1; }
 
-#reset {
-  margin-top: 1.5rem;
-  width: 100%;
-  background: var(--border);
-  color: var(--text);
-}
-
-#reset:hover { background: #364555; }
+/* (#reset rule retired — when the button was a full-width
+ * "Create another QR" beneath everything else, it had its own
+ * margin-top + width: 100% + grey background. Now it lives in
+ * the result-footer flex row as a class="tertiary" sibling of
+ * Delete, and the id-level rule was making it 1.5rem shorter
+ * than the .danger button via `align-items: stretch` minus that
+ * top margin. Specificity (1,0,0) beat every class-level
+ * attempt to reset it — only delete works.) */
 
 /* Anonymous prompt �X sits where the Create form does for logged-in
  * users. Same vertical rhythm so the page doesn't jump when auth
