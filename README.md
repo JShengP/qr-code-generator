@@ -44,7 +44,7 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 **Two ways to authenticate a mutation:**
 
 1. **Browser users** — sign in via magic link or GitHub; the `qrs_session` cookie carries the credential. The UI never asks for an `edit_token`.
-2. **Programmatic clients** (CI scripts, curl, automation) — keep the `edit_token` that `POST /api/qr/create` returns once, then send it as `Authorization: Bearer <token>` on `PATCH`/`DELETE`/`rotate-edit-token`. The DB stores only the SHA-256 hash; losing the plaintext means rotating to issue a fresh one.
+2. **Programmatic clients** (CI scripts, curl, automation) — issue an `edit_token` from the web UI's **API token** button (next to the Token field in any owned QR's result panel), then send it as `Authorization: Bearer <token>` on `PATCH`/`DELETE`/`rotate-edit-token`. The DB stores only the SHA-256 hash; losing the plaintext means rotating to issue a fresh one. **Full walkthrough + curl examples + FAQ in [`docs/API.md`](docs/API.md).**
 
 **Accounts unify on email:** signing in via magic link and then via GitHub with the same email merges into one user row. GitHub primary-email matches link an existing magic-link account to the GitHub identity; differing emails create separate users.
 
