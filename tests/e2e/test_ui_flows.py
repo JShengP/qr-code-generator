@@ -84,10 +84,12 @@ def test_full_create_edit_delete_lifecycle(signed_in_page):
     assert not page.locator("#create-form").is_visible()
     assert "example.com" in page.locator("#original-url").input_value()
 
-    # Sidebar picks up the new QR
+    # Sidebar picks up the new QR. Use relative count — earlier
+    # tests in the same session may have left QRs in the shared DB.
     sidebar_items = page.locator("#my-qrs-list li")
     sidebar_items.first.wait_for(state="visible")
-    assert sidebar_items.count() == 1
+    before_count = sidebar_items.count()
+    assert before_count >= 1, "the newly-created QR should be present"
 
     # --- Edit -------------------------------------------------------
     page.locator("#new-url-input").fill("https://new-target.example")
@@ -113,11 +115,13 @@ def test_full_create_edit_delete_lifecycle(signed_in_page):
     page.on("dialog", lambda dialog: dialog.accept())
     page.locator("#delete-qr").click()
 
-    # Back to create form, sidebar empty
+    # Back to create form; sidebar shrinks by 1.
     page.locator("#create-form").wait_for(state="visible")
     assert not page.locator("#result").is_visible()
-    page.wait_for_timeout(200)
-    assert sidebar_items.count() == 0
+    page.wait_for_function(
+        f"() => document.querySelectorAll('#my-qrs-list li').length === "
+        f"{before_count - 1}"
+    )
 
 
 def test_current_expires_field_updates_after_patch(signed_in_page):
@@ -157,26 +161,80 @@ def test_current_expires_field_updates_after_patch(signed_in_page):
     )
 
 
+def test_api_token_modal_generates_and_displays_bearer(signed_in_page):
+    """Settings flow: result panel "API token" button -> modal ->
+    Generate -> show plaintext + curl example. Locks the modal
+    state machine (prompt -> result) and the History refresh."""
+    page, _ = signed_in_page
+
+    # Open a fresh QR
+    page.locator("#url-input").fill("https://example.com")
+    page.locator("#create-form button[type=submit]").click()
+    page.locator("#result").wait_for(state="visible")
+
+    # Open the API-token modal
+    page.locator("#open-api-token").click()
+    modal = page.locator("#api-token-modal")
+    assert modal.is_visible()
+    # Initial state: prompt visible, result hidden
+    assert page.locator("#api-token-prompt").is_visible()
+    assert not page.locator("#api-token-result").is_visible()
+
+    # Generate
+    page.locator("#api-token-generate").click()
+
+    # Result populated
+    page.locator("#api-token-result").wait_for(state="visible")
+    token_value = page.locator("#api-token-value").input_value()
+    assert len(token_value) >= 32, f"unexpected token shape: {token_value!r}"
+    # curl example must include the actual token AND the QR's path
+    curl_text = page.locator("#api-token-curl").text_content()
+    assert token_value in curl_text
+    assert "/api/qr/" in curl_text
+    assert "Authorization: Bearer" in curl_text
+
+    # Close
+    page.locator("#api-token-close").click()
+    assert not modal.is_visible()
+
+
 def test_sidebar_x_button_deletes_qr(signed_in_page):
     """Alternative delete path: click × on a My-QRs row instead of
-    opening the QR and using the result-panel Delete."""
+    opening the QR and using the result-panel Delete.
+
+    Uses RELATIVE count comparisons because earlier tests in the
+    same session may have left QRs in the shared (session-scoped)
+    test DB. Absolute `count == 1` would be order-of-tests-dependent."""
     page, _ = signed_in_page
+
+    sidebar_items = page.locator("#my-qrs-list li")
+    # Wait for any prior sidebar state to settle (the initial
+    # /api/qr/mine fetch on page load).
+    page.wait_for_timeout(150)
+    before_create = sidebar_items.count()
 
     page.locator("#url-input").fill("https://example.com")
     page.locator("#create-form button[type=submit]").click()
     page.locator("#result").wait_for(state="visible")
 
-    sidebar_items = page.locator("#my-qrs-list li")
-    sidebar_items.first.wait_for(state="visible")
-    assert sidebar_items.count() == 1
+    # Sidebar must grow by exactly one (the new QR is at the top —
+    # sorted by created_at DESC server-side).
+    page.wait_for_function(
+        f"() => document.querySelectorAll('#my-qrs-list li').length === "
+        f"{before_create + 1}"
+    )
 
     # opacity:0 until hover; force=True bypasses Playwright's
     # actionability check.
     page.on("dialog", lambda dialog: dialog.accept())
     sidebar_items.first.locator(".qr-row-delete").click(force=True)
 
-    page.wait_for_timeout(200)
-    assert sidebar_items.count() == 0
+    # After delete: sidebar shrinks back to its pre-create size.
+    page.wait_for_function(
+        f"() => document.querySelectorAll('#my-qrs-list li').length === "
+        f"{before_create}"
+    )
+
     # Currently-open QR was the one we deleted; result panel must
     # have been reset.
     assert not page.locator("#result").is_visible()

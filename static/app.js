@@ -603,6 +603,77 @@ function resetCreateView() {
   $("edit-expires-input").value = "";
 }
 
+// ---------------------------------------------------------------------
+// API-token modal: wraps POST /api/qr/{token}/rotate-edit-token in a
+// "click Generate to issue a one-time bearer + show a curl example"
+// flow. Surfaces the otherwise-hidden edit_token mechanism to
+// programmatic clients without polluting the day-to-day UI.
+// ---------------------------------------------------------------------
+
+const apiTokenModal = $("api-token-modal");
+
+$("open-api-token").addEventListener("click", () => {
+  if (!currentToken) return;
+  $("api-token-target").textContent = currentToken;
+  // Reset to the "pre-generate" state every open.
+  $("api-token-prompt").hidden = false;
+  $("api-token-result").hidden = true;
+  $("api-token-error").hidden = true;
+  $("api-token-value").value = "";
+  $("api-token-curl").textContent = "";
+  apiTokenModal.hidden = false;
+});
+
+$("api-token-close").addEventListener("click", () => {
+  apiTokenModal.hidden = true;
+});
+
+// Click outside the modal-content closes (same UX as the sign-in modal).
+apiTokenModal.addEventListener("click", (event) => {
+  if (event.target === apiTokenModal) apiTokenModal.hidden = true;
+});
+
+$("api-token-generate").addEventListener("click", async () => {
+  if (!currentToken) return;
+  $("api-token-error").hidden = true;
+  try {
+    const resp = await fetch(
+      `/api/qr/${currentToken}/rotate-edit-token`,
+      { method: "POST", credentials: "same-origin" },
+    );
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({ detail: resp.statusText }));
+      $("api-token-error").textContent = formatError(body, resp.status);
+      $("api-token-error").hidden = false;
+      return;
+    }
+    const data = await resp.json();
+    $("api-token-value").value = data.edit_token;
+    // Build a copy-pastable curl example using the current origin so
+    // it works whether they're on http://127.0.0.1:8001 or a deployed
+    // domain. Multi-line + line continuations for readability.
+    const origin = window.location.origin;
+    $("api-token-curl").textContent =
+      `# Change destination\n` +
+      `curl -X PATCH ${origin}/api/qr/${currentToken} \\\n` +
+      `  -H "Authorization: Bearer ${data.edit_token}" \\\n` +
+      `  -H "Content-Type: application/json" \\\n` +
+      `  -d '{"url": "https://new-destination.example/"}'\n` +
+      `\n` +
+      `# Soft-delete\n` +
+      `curl -X DELETE ${origin}/api/qr/${currentToken} \\\n` +
+      `  -H "Authorization: Bearer ${data.edit_token}"`;
+    $("api-token-prompt").hidden = true;
+    $("api-token-result").hidden = false;
+    // History gained a "rotate_edit_token" entry; refresh so the user
+    // can see it appear immediately on close.
+    refreshAuditTimeline(currentToken);
+  } catch (err) {
+    $("api-token-error").textContent = `Network error: ${err.message}`;
+    $("api-token-error").hidden = false;
+  }
+});
+
 function showLoginOK(msg) {
   loginStatus.textContent = msg;
   loginStatus.hidden = false;

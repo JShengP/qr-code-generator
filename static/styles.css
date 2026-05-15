@@ -636,3 +636,70 @@ button.tertiary:hover {
 .audit-timeline .diff .after {
   color: var(--accent);
 }
+
+/* ---------- API token modal ----------------------------------- */
+
+.alert-warn {
+  background: #3a2e1a;
+  border: 1px solid #b97a2e;
+  color: #f5d8a8;
+  margin-top: 0.75rem;
+}
+
+.alert-warn p {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.token-mono {
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  color: var(--accent);
+}
+
+#api-token-modal .modal-content h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+#api-token-modal code {
+  background: var(--bg);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+}
+
+#api-token-generate {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.api-token-snippet {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.api-token-snippet summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  padding: 0.25rem 0;
+}
+
+.api-token-snippet summary:hover { color: var(--text); }
+
+.api-token-snippet pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  overflow-x: auto;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

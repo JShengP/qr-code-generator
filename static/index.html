@@ -20,6 +20,59 @@
     </div>
   </nav>
 
+  <!-- API token modal — per-QR, opened from the Token row's
+       "API token" button on the result panel. Wraps the existing
+       POST /api/qr/{token}/rotate-edit-token endpoint with a
+       Generate / Show-once / Copy / curl-example flow. -->
+  <div id="api-token-modal" class="modal" hidden>
+    <div class="modal-content">
+      <h2>API token for <span id="api-token-target" class="token-mono"></span></h2>
+      <p class="hint">
+        For curl / CI / cross-device scripts. Send as
+        <code>Authorization: Bearer &lt;token&gt;</code> on
+        <code>PATCH</code>, <code>DELETE</code>, or
+        <code>rotate-edit-token</code>. The browser session cookie
+        already handles auth here — this is only for programmatic
+        access.
+      </p>
+
+      <div id="api-token-prompt">
+        <p class="hint">
+          Click below to issue a new token. <strong>Any
+          previously-issued token for this QR stops working
+          immediately</strong> — the new one replaces the old one.
+        </p>
+        <button type="button" id="api-token-generate" class="secondary">
+          Generate new token
+        </button>
+      </div>
+
+      <div id="api-token-result" hidden>
+        <div class="alert alert-warn">
+          <p>
+            <strong>⚠ Shown ONCE.</strong> Copy now — we never display
+            this again. Any previously-issued token for this QR is
+            now invalid.
+          </p>
+          <div class="row">
+            <input id="api-token-value" readonly />
+            <button type="button" class="copy" data-target="api-token-value">Copy</button>
+          </div>
+        </div>
+        <details class="api-token-snippet">
+          <summary>Example curl</summary>
+          <pre id="api-token-curl"></pre>
+        </details>
+      </div>
+
+      <div id="api-token-error" class="alert alert-error" hidden></div>
+
+      <div class="modal-actions">
+        <button type="button" id="api-token-close" class="tertiary">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Sign-in modal. Hidden by default, shown when "Sign in" is clicked. -->
   <div id="login-modal" class="modal" hidden>
     <div class="modal-content">
@@ -132,6 +185,14 @@
           <label>Token</label>
           <div class="row">
             <input id="token" readonly />
+            <button
+              type="button"
+              id="open-api-token"
+              class="copy"
+              title="Issue a one-time API token for curl / scripts / cross-device PATCH and DELETE."
+            >
+              API token
+            </button>
           </div>
         </div>
         <div class="field">
