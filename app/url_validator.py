@@ -1,9 +1,29 @@
 import ipaddress
+import re
 import unicodedata
 from urllib.parse import urlparse, urlunparse
 
 MAX_URL_LENGTH = 2048
-ALLOWED_SCHEMES = ("http", "https")
+
+# Two disjoint sets:
+#   URL_SCHEMES — the scanner opens a browser, our `/r/{token}` 302
+#                 returns Location, browser follows. Full host /
+#                 SSRF / blocklist / normalization apply.
+#   URI_SCHEMES — the OS handler (mail app, dialer, SMS, maps) picks
+#                 up the redirect on the device side. There's no host
+#                 in the http sense, so SSRF / blocklist don't apply;
+#                 minimal per-scheme sanity checks only.
+URL_SCHEMES = ("http", "https")
+URI_SCHEMES = ("mailto", "tel", "sms", "geo")
+ALLOWED_SCHEMES = URL_SCHEMES + URI_SCHEMES
+
+# Minimal validators for the URI schemes. Goal is to catch obvious
+# junk (`mailto:` with no `@`, `tel:` with no digits) without
+# pretending to do RFC-perfect parsing — the device's handler does
+# the real validation when it tries to act on the value.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_RE = re.compile(r"^\+?[\d().\-\s*#]+$")
+_GEO_RE = re.compile(r"^-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?(?:,-?\d+(?:\.\d+)?)?$")
 
 # Cyrillic + Greek glyphs that visually fold to ASCII letters. Sourced
 # from the Unicode TR39 confusables data narrowed to the high-frequency
@@ -160,31 +180,69 @@ def is_internal_ip(hostname: str) -> bool:
     )
 
 
+def _validate_uri_payload(scheme: str, parsed) -> None:
+    """Minimal sanity check for mailto / tel / sms / geo payloads.
+    Raises ValueError on obvious junk.
+
+    For these schemes the bulk of the data sits in `parsed.path`
+    (e.g. `mailto:foo@bar.com` → path=`foo@bar.com`). `parsed.query`
+    is the optional `?body=...` / `?subject=...` etc.
+    """
+    body = parsed.path
+    if not body:
+        raise ValueError(f"{scheme}: scheme requires a non-empty value after the colon")
+
+    if scheme == "mailto":
+        # mailto: can carry multiple comma-separated addresses; check
+        # the first one looks like an email and trust the user for the
+        # rest (the email client will reject malformed ones at send time).
+        first = body.split(",", 1)[0].strip()
+        if not _EMAIL_RE.match(first):
+            raise ValueError(
+                f"mailto: target {first!r} doesn't look like an email address"
+            )
+    elif scheme in ("tel", "sms"):
+        if not _PHONE_RE.match(body):
+            raise ValueError(
+                f"{scheme}: target {body!r} doesn't look like a phone number "
+                "(digits, +, -, spaces, parens only)"
+            )
+    elif scheme == "geo":
+        # `geo:lat,lon` or `geo:lat,lon,alt`; optional `?z=zoom` query
+        # is preserved separately.
+        if not _GEO_RE.match(body):
+            raise ValueError(
+                f"geo: target {body!r} must be `lat,lon` (decimal degrees)"
+            )
+
+
 def validate_url(url: str) -> str:
     """Validate (length / scheme / blocklist / SSRF / control chars) and
-    conservatively normalize.
+    conservatively normalize. Returns the normalized form.
 
-    Normalization scope is intentionally narrow: per RFC 3986, scheme and
-    host are case-insensitive (so we lowercase them), but path, query, and
-    fragment are case-sensitive at the protocol level — `/User` and `/user`
-    can resolve to different resources on the same server. The reference
-    answer lowercases the entire URL, which can break case-sensitive paths
-    (S3 keys, GitHub raw URLs, etc.); we deviate. See DECISIONS.md Stage 3.
+    Two scheme classes are accepted:
 
-    We also do NOT upgrade `http://` to `https://`: not every target speaks
-    TLS on 443, and a forced upgrade would silently break those redirects.
+    **URL schemes** (`http`, `https`) — the scanner opens a browser
+    that follows our redirect. Subject to:
+      - hostname required + not on `BLOCKED_HOSTNAMES`/`BLOCKED_DOMAINS`
+      - hostname not resolving to a private / loopback / metadata IP
+      - userinfo (`user:pass@`) rejected
+      - path/query case preserved; only scheme + host lowercased
+      - bare-root trailing slash collapsed when no query/fragment
 
-    Post-review hardening (DECISIONS.md "Post-review fixes"):
+    **URI schemes** (`mailto`, `tel`, `sms`, `geo`) — the OS handler
+    (mail app / dialer / SMS / maps) acts on the value device-side.
+    These have no http-style host, so SSRF / blocklist don't apply;
+    we only do a minimal per-scheme shape check (see
+    `_validate_uri_payload`). The redirect handler still emits these
+    as the Location header — modern browsers route them to the OS
+    handler.
 
-    - Control chars rejected before parsing so they can't reach the
-      Location header.
-    - Userinfo (`user:pass@`) rejected — short links must not double as
-      credential carriers, and an embedded credential makes the visible
-      hostname misleading (`https://google.com@attacker.com`).
-    - IP-literal hosts checked against the private/loopback/link-local
-      ranges to block SSRF against the LAN and cloud metadata services.
-    - Blocklist matches both the exact hostname and any subdomain of a
-      blocked registrable domain.
+    Normalization scope (for URL schemes) is intentionally narrow:
+    per RFC 3986, scheme and host are case-insensitive, but path,
+    query, and fragment are case-sensitive at the protocol level
+    (`/User` and `/user` can resolve to different resources on the
+    same server). See DECISIONS.md Stage 3 for the full rationale.
     """
     if len(url) > MAX_URL_LENGTH:
         raise ValueError(f"URL exceeds max length of {MAX_URL_LENGTH} characters")
@@ -194,12 +252,22 @@ def validate_url(url: str) -> str:
             raise ValueError("URL contains forbidden control characters")
 
     parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
 
-    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+    if scheme not in ALLOWED_SCHEMES:
         raise ValueError(
-            f"Invalid scheme {parsed.scheme!r} — only {ALLOWED_SCHEMES} are allowed"
+            f"Invalid scheme {parsed.scheme!r} — allowed: {', '.join(ALLOWED_SCHEMES)}"
         )
 
+    # ---- URI schemes (mailto / tel / sms / geo) -----------------
+    if scheme in URI_SCHEMES:
+        _validate_uri_payload(scheme, parsed)
+        # No netloc, no host normalization — preserve the rest as-is.
+        return urlunparse(
+            (scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+        )
+
+    # ---- URL schemes (http / https) -----------------------------
     if not parsed.hostname:
         raise ValueError("Invalid URL — missing hostname")
 
@@ -239,5 +307,5 @@ def validate_url(url: str) -> str:
         path = parsed.path
 
     return urlunparse(
-        (parsed.scheme.lower(), netloc, path, parsed.params, parsed.query, parsed.fragment)
+        (scheme, netloc, path, parsed.params, parsed.query, parsed.fragment)
     )

@@ -307,6 +307,110 @@ def test_blocklist_case_insensitive(client):
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "good_uri",
+    [
+        "mailto:foo@example.com",
+        "mailto:foo@example.com?subject=Hi&body=Hello",
+        "mailto:a@x.com,b@y.com",  # multiple addresses, comma-separated
+        "tel:+886912345678",
+        "tel:(02) 1234-5678",
+        "sms:+886912345678",
+        "sms:+886912345678?body=test",
+        "geo:25.0339,121.5644",      # Taipei
+        "geo:-33.8688,151.2093",     # Sydney
+        "geo:40.7128,-74.0060,30",   # NYC + altitude
+    ],
+)
+def test_non_http_uri_schemes_accepted(client, good_uri):
+    """mailto / tel / sms / geo must round-trip through create."""
+    r = client.post("/api/qr/create", json={"url": good_uri})
+    assert r.status_code == 200, r.text
+    assert r.json()["original_url"] == good_uri
+
+
+@pytest.mark.parametrize(
+    "bad_uri",
+    [
+        "mailto:",                  # empty payload
+        "mailto:no-at-sign",        # missing @
+        "tel:",                     # empty
+        "tel:abc",                  # not a phone number
+        "sms:",                     # empty
+        "geo:",                     # empty
+        "geo:not-a-coord",          # not lat,lon
+        "geo:25.0",                 # missing lon
+    ],
+)
+def test_non_http_uri_schemes_validate_payload(client, bad_uri):
+    """Empty or shape-broken URI payloads must 422, not silently pass."""
+    r = client.post("/api/qr/create", json={"url": bad_uri})
+    assert r.status_code == 422, f"expected 422 for {bad_uri!r}, got {r.status_code}"
+
+
+def test_non_http_uri_redirects_carry_scheme(client):
+    """Verify the /r/{token} -> Location header preserves the
+    mailto: scheme so the OS handler picks it up on the device.
+
+    NOTE: httpx's URL parser (TestClient's HTTP layer) rejects
+    non-`/`-prefixed paths in absolute URIs, so a `client.get`
+    on `/r/{token}` blows up while constructing the response
+    object — it tries to resolve the Location header as a URL
+    internally even with follow_redirects=False. To verify the
+    redirect we instead build the ASGI scope ourselves and read
+    the raw headers Starlette emits.
+
+    The same flow works fine against a real browser (which
+    handles `mailto:` Location headers natively — that's what
+    the smoke script covers end-to-end).
+    """
+    token = client.post(
+        "/api/qr/create", json={"url": "mailto:foo@example.com"}
+    ).json()["token"]
+
+    from starlette.testclient import TestClient as _TC
+    # Use a raw ASGI call to read headers without httpx's URL parse.
+    import asyncio
+
+    async def _capture():
+        # Build a minimal HTTP scope for GET /r/{token}.
+        from app.main import app
+
+        captured = {}
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                captured["status"] = message["status"]
+                captured["headers"] = {
+                    k.decode().lower(): v.decode() for k, v in message["headers"]
+                }
+            # ignore http.response.body
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": f"/r/{token}",
+            "raw_path": f"/r/{token}".encode(),
+            "query_string": b"",
+            "headers": [],
+            "server": ("testserver", 80),
+            "client": ("testclient", 12345),
+            "root_path": "",
+        }
+        await app(scope, receive, send)
+        return captured
+
+    captured = asyncio.run(_capture())
+    assert captured["status"] == 302
+    assert captured["headers"]["location"] == "mailto:foo@example.com"
+
+
 def test_blocklist_catches_cyrillic_homograph(client):
     """Cyrillic 'е' (U+0435) folds to Latin 'e', so 'еvil.com' must block."""
     cyrillic_evil = "еvil.com"  # "еvil.com"
