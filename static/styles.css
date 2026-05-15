@@ -199,18 +199,21 @@ button.secondary:hover { background: #364555; }
  * each picks up the hue of its own border so the semantics stay
  * obvious (red = destructive, neutral = navigational). Specificity
  * (0,2,1) still wins over the bare .danger / .tertiary rules. */
+/* Tinted backgrounds — bumped intensity (was 0.08 / 0.04, almost
+ * invisible against the #1a2029 surface). 0.15 + 0.10 land in the
+ * "obviously tinted but not loud" zone. */
 .result-footer > button.danger {
-  background: rgba(255, 107, 107, 0.08);
+  background: rgba(255, 107, 107, 0.15);
 }
 .result-footer > button.danger:hover {
-  background: var(--error-bg);
+  background: rgba(255, 107, 107, 0.28);
 }
 
 .result-footer > button.tertiary {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.10);
 }
 .result-footer > button.tertiary:hover {
-  background: #364555;
+  background: rgba(255, 255, 255, 0.18);
 }
 
 button.danger {
