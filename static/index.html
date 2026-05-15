@@ -134,6 +134,15 @@
             <input id="token" readonly />
           </div>
         </div>
+        <div class="field">
+          <label>
+            Expires at
+            <span class="hint">(when this QR stops resolving — blank = never)</span>
+          </label>
+          <div class="row">
+            <input id="current-expires" readonly />
+          </div>
+        </div>
         <!-- edit_token is not exposed in the UI on purpose. The API
              still issues it (CreateResponse.edit_token) and still
              accepts `Authorization: Bearer <edit_token>` on PATCH /

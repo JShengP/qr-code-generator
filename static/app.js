@@ -99,10 +99,11 @@ editForm.addEventListener("submit", async (event) => {
     }
 
     const data = await resp.json();
-    // Update the displayed destination. The QR image (which encodes
+    // Update both displayed fields. The QR image (which encodes
     // /r/{token}) stays unchanged — that's the whole point of dynamic
     // QR codes.
     $("original-url").value = data.original_url;
+    $("current-expires").value = _formatExpires(data.expires_at);
     $("new-url-input").value = "";
     $("edit-expires-input").value = "";
 
@@ -192,11 +193,21 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+// Server stores naive UTC. The trailing "Z" makes Date parse as
+// UTC; toLocaleString then renders in the browser's locale + TZ.
+// Returns "(never)" for null / empty so the UI never shows a bare
+// empty input that looks like a render bug.
+function _formatExpires(isoString) {
+  if (!isoString) return "(never)";
+  return new Date(isoString + "Z").toLocaleString();
+}
+
 function renderResult(data) {
   $("qr-image").src = data.qr_code_url;
   $("short-url").value = data.short_url;
   $("original-url").value = data.original_url;
   $("token").value = data.token;
+  $("current-expires").value = _formatExpires(data.expires_at);
   currentToken = data.token;
   // We intentionally ignore data.edit_token here — the UI doesn't
   // expose it. The API still returns it for programmatic clients.
@@ -496,6 +507,7 @@ function openOwnedQR(item) {
   $("short-url").value = item.short_url;
   $("original-url").value = item.original_url;
   $("token").value = item.token;
+  $("current-expires").value = _formatExpires(item.expires_at);
   currentToken = item.token;
   $("create-form").hidden = true;
   $("result").hidden = false;
