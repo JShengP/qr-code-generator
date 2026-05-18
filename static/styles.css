@@ -703,3 +703,49 @@ button.tertiary:hover {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* Collapsible "other schemes" examples block under the Create form's
+ * URL input. The <details> default arrow is fine; we just tame the
+ * code/ul styling so the block doesn't visually crowd the input. */
+.uri-examples {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.uri-examples summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+
+.uri-examples summary:hover { color: var(--text); }
+
+.uri-examples ul {
+  list-style: none;
+  padding: 0.5rem 0 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.uri-examples li {
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.uri-examples code {
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+.uri-examples > p.hint {
+  margin: 0.75rem 0 0;
+  color: var(--text-dim);
+}

@@ -139,7 +139,12 @@
     </div>
 
     <form id="create-form" novalidate hidden>
-      <label for="url-input">URL to shorten</label>
+      <label for="url-input">
+        Destination
+        <span class="hint">
+          (URL or OS-handler URI — see examples below)
+        </span>
+      </label>
       <input
         id="url-input"
         name="url"
@@ -148,6 +153,21 @@
         required
         autofocus
       />
+      <details class="uri-examples">
+        <summary>Other accepted schemes (click to expand)</summary>
+        <ul>
+          <li><code>https://example.com/long/path</code> — open in browser (most common)</li>
+          <li><code>mailto:foo@example.com?subject=Hi&amp;body=...</code> — open email composer</li>
+          <li><code>tel:+886912345678</code> — open dialer</li>
+          <li><code>sms:+886912345678?body=test</code> — draft an SMS</li>
+          <li><code>geo:25.0339,121.5644</code> — open maps app</li>
+        </ul>
+        <p class="hint">
+          Same dynamic-QR trade-off applies to all of them: the QR
+          encodes our short URL, you can change the destination
+          later without re-printing.
+        </p>
+      </details>
       <label for="create-expires-input">
         Expires at <span class="hint">(optional — blank = never)</span>
       </label>
@@ -219,12 +239,14 @@
         <p class="hint">
           Same QR, new target. The short URL is fixed once printed; updating
           here re-points it at a new destination on the next scan. Either
-          field may be filled (or both); blank = leave unchanged.
+          field may be filled (or both); blank = leave unchanged. Accepts
+          <code>https://</code>, <code>mailto:</code>, <code>tel:</code>,
+          <code>sms:</code>, or <code>geo:</code>.
         </p>
         <input
           id="new-url-input"
           type="url"
-          placeholder="https://new-destination.example/ (leave blank to keep current)"
+          placeholder="https://... or mailto:... (leave blank to keep current)"
         />
         <label for="edit-expires-input">
           Expires at <span class="hint">(leave blank to keep current)</span>
