@@ -33,6 +33,8 @@ The fact that this exercise demands modification + analytics + expiration is wha
 
 **Your take:**
 
+I started thinking "dynamic = changeable URL." Extending the validator to accept `mailto:` / `tel:` / `sms:` / `geo:` re-framed it for me: dynamic isn't about *changing* the URL, it's about the QR encoding a **pointer instead of a value**. The same printed sticker can flip from "call this number" to "open this map" later — the physical artifact is decoupled from the action it triggers. Once I saw it that way, dynamic-by-default makes sense even for QRs I'm pretty sure I'll never edit. Static-encodes-value is the same trade-off as embedding a magic constant in code instead of a named reference: cheaper today, painful the first time it has to change.
+
 ---
 
 ## 2. Token Generation
@@ -75,6 +77,8 @@ The "14% by 10M tokens" looks scary but is fine — the cost of a collision is o
 
 **Your take:**
 
+The nonce source was the moment I stopped thinking about randomness purely as "is it secure" and started thinking about it as "does it independent-sample under contention." A timestamp nonce isn't insecure in any classical sense — but two simultaneous create requests for the same URL would derive the same nonce, hash to the same token, fail the uniqueness check, and burn every retry. CSPRNG fixes the security story and the concurrency story in one stroke. Lesson I'm taking forward: when picking an entropy source, ask "what does this look like under load with identical inputs" alongside "is the entropy good."
+
 ---
 
 ## 3. Redirect Strategy
@@ -104,6 +108,8 @@ The "14% by 10M tokens" looks scary but is fine — the cost of a collision is o
 A hybrid that's seen in production: serve 302 by default, but offer "promote to 301" as a one-time finalization. Our current API doesn't model this, but it would be a single boolean column on `url_mappings` and a branch in `redirect()`.
 
 **Your take:**
+
+What locked 302 in for me wasn't the analytics argument — it was the audit-log promise. We tell users "every PATCH / DELETE / rotate lands in the timeline, so you can always see what happened to this QR." That promise is hollow under 301: the cached redirect in the user's browser doesn't know about our timeline, and a change that we logged today might not be visible to a scanner for months. 302 is what makes the audit log an *honest* record of system state instead of an aspirational one. The CDN-cost trade-off is real but cheap by comparison.
 
 ---
 
@@ -140,6 +146,8 @@ This is more conservative than the reference answer, which lowercases the entire
 
 **Your take:**
 
+Adding `mailto:` / `tel:` / `sms:` / `geo:` forced me to make the "validate but don't transform" stance explicit. I could canonicalize `tel:+886-912-345-678` → `tel:+886912345678`, but a user might be relying on the dashes for legibility in the dialer preview, and the OS handler will normalize it anyway when placing the call. The rule we landed on: regex-reject obvious garbage, accept anything else byte-for-byte, let the downstream consumer (browser, mail client, dialer, map app) decide what canonical means. Same philosophy as preserving URL path case — the network of things consuming our output has more semantic context about correctness than we do, and being conservative-but-non-destructive is the safer default.
+
 ---
 
 ## 5. Error Semantics
@@ -174,6 +182,8 @@ Once you commit to this distinction, you have to be honest about which 410 you m
 So a debugging human (or a log analyser) can tell the two apart, even though the status code is the same. A future enhancement could split them — `410` vs a custom `499`-ish — but that's over-engineering for the savings.
 
 **Your take:**
+
+I almost split deleted vs expired into two separate status codes while implementing this — it felt cleaner. I stopped after asking who the consumer of that distinction would actually be: a human reading audit logs already gets it from the `detail` string, a CDN cache analytics tool already gets it from the same place, and no automated system in our stack would behave differently based on a custom code. Inventing one would be "honest signal for a constituency that doesn't exist." The wider lesson I'm taking from this project: spend status-code budget where there are real consumers ready to act on the distinction, not where the difference is just theoretically real.
 
 ---
 
