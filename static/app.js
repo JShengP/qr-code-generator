@@ -240,6 +240,8 @@ $("analytics-to").addEventListener("change", () => {
 $("analytics-reset").addEventListener("click", () => {
   $("analytics-from").value = "";
   $("analytics-to").value = "";
+  $("analytics-from").max = "";
+  $("analytics-to").min = "";
   if (currentToken) refreshAnalytics(currentToken);
 });
 
@@ -308,12 +310,20 @@ function _applyRedirectStatus(status) {
   currentRedirectStatus = status;
   const label = status === 301 ? "301 (permanent — cached)" : "302 (temporary)";
   $("current-redirect-status").value = label;
+  // The collapsed <details> summary mirrors the current state so the
+  // user can read it without expanding — they only need to expand
+  // when they actually want to promote.
+  $("redirect-status-summary-value").textContent = label;
+  // Always re-collapse the section when (re-)rendering a QR. Otherwise
+  // opening a 302-state QR after just-promoting a different one would
+  // inherit the previous open-state and surface the dangerous button.
+  $("redirect-status-details").open = false;
   // Once promoted, the button can't take it back. Disable + relabel so
   // the user understands the state without having to re-read the hint.
   const btn = $("promote-301-btn");
   if (status === 301) {
     btn.disabled = true;
-    btn.textContent = "Promoted";
+    btn.textContent = "Already 301";
     btn.title = "This link is already 301. Promotion is one-way.";
   } else {
     btn.disabled = false;
@@ -345,6 +355,10 @@ function _setDownloadLink(token) {
 function _resetAnalyticsRange() {
   $("analytics-from").value = "";
   $("analytics-to").value = "";
+  // Clear the cross-constraints too so opening a new QR doesn't
+  // inherit the previous QR's date bounds.
+  $("analytics-from").max = "";
+  $("analytics-to").min = "";
   $("analytics-summary-suffix").textContent = "total scans";
 }
 
@@ -455,10 +469,30 @@ async function refreshAuditTimeline(token) {
 
 async function refreshAnalytics(token) {
   const chart = $("analytics-chart");
-  chart.innerHTML = '<li class="empty">Loading…</li>';
-  $("analytics-total").textContent = "—";
   const from = $("analytics-from").value.trim();
   const to = $("analytics-to").value.trim();
+
+  // Cross-constrain the two pickers so the calendar UI greys out
+  // invalid choices (e.g. picking a `from` later than the current
+  // `to`). Strict typing/paste can still slip past this — the
+  // explicit check below catches that case.
+  $("analytics-from").max = to || "";
+  $("analytics-to").min = from || "";
+
+  // Validate BEFORE updating the suffix or firing the fetch. A user
+  // who flips from/to should see a clear inline message, not a
+  // generic "Analytics unavailable." from the 422.
+  if (from && to && from > to) {
+    chart.innerHTML =
+      '<li class="empty">Date range invalid: <strong>From</strong> ' +
+      "must be on or before <strong>To</strong>.</li>";
+    $("analytics-total").textContent = "—";
+    $("analytics-summary-suffix").textContent = "—";
+    return;
+  }
+
+  chart.innerHTML = '<li class="empty">Loading…</li>';
+  $("analytics-total").textContent = "—";
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
@@ -472,7 +506,19 @@ async function refreshAnalytics(token) {
   try {
     const r = await fetch(url, { credentials: "same-origin" });
     if (!r.ok) {
-      chart.innerHTML = '<li class="empty">Analytics unavailable.</li>';
+      // Surface the server's detail string if any — that's more useful
+      // than a generic "Analytics unavailable.". 422s on this endpoint
+      // are validation messages worth showing verbatim.
+      const body = await r.json().catch(() => ({ detail: r.statusText }));
+      const msg = formatError(body, r.status);
+      // textContent (not innerHTML) so a future server message can't
+      // turn into a markup injection. The static "Analytics
+      // unavailable: " prefix keeps the surface readable.
+      chart.innerHTML = "";
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = `Analytics unavailable: ${msg}`;
+      chart.appendChild(li);
       return;
     }
     const data = await r.json();

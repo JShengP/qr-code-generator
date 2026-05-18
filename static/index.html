@@ -312,23 +312,39 @@
             <input id="current-expires" readonly />
           </div>
         </div>
-        <div class="field">
-          <label>
-            Redirect status
-            <span class="hint">(302 = re-checked every scan; 301 = cached forever)</span>
-          </label>
+        <!-- Redirect status lives inside a collapsed <details> on
+             purpose. The "Promote to 301" action is one-way and
+             irreversible (clients cache 301s aggressively, the
+             promotion fact propagates faster than any undo), so the
+             button shouldn't sit next to the everyday Copy / API-token
+             affordances where it's a misclick risk. Users who need
+             it expand the section deliberately; users who don't
+             never see it. -->
+        <details class="field redirect-status-advanced" id="redirect-status-details">
+          <summary>
+            <span class="redirect-status-summary-label">Redirect status</span>
+            <span class="redirect-status-summary-value" id="redirect-status-summary-value">
+              302 (temporary)
+            </span>
+          </summary>
+          <p class="hint">
+            302 re-checks every scan (default). 301 tells browsers to
+            cache the redirect permanently — fewer round-trips, but
+            subsequent destination changes may never reach a client
+            that already cached the 301. <strong>ONE-WAY operation.</strong>
+          </p>
           <div class="row">
             <input id="current-redirect-status" readonly />
             <button
               type="button"
               id="promote-301-btn"
-              class="copy"
+              class="danger-soft"
               title="Promote to a permanent 301 redirect. Browsers will cache the result aggressively; subsequent edits may not propagate. ONE-WAY operation."
             >
               Promote to 301
             </button>
           </div>
-        </div>
+        </details>
         <!-- edit_token is not exposed in the UI on purpose. The API
              still issues it (CreateResponse.edit_token) and still
              accepts `Authorization: Bearer <edit_token>` on PATCH /

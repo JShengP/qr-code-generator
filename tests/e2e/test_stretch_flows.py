@@ -20,11 +20,26 @@ def _create_qr(page, url: str = "https://example.com") -> None:
 # ---------------------------------------------------------------------
 
 
+def _expand_redirect_status(page):
+    """The Promote-to-301 button is wrapped in a collapsed <details>
+    on purpose (it's a one-way action, easy to misclick if it sits
+    next to Copy / API token). Tests have to expand it explicitly,
+    mirroring what a real user does."""
+    page.evaluate(
+        "() => { document.getElementById('redirect-status-details').open = true; }"
+    )
+
+
 def test_promote_to_301_disables_button_and_updates_status(signed_in_page):
     page, _ = signed_in_page
     _create_qr(page)
 
-    # Initial state: 302, button is enabled and labeled "Promote to 301"
+    # Default-collapsed summary already reflects state; no expand needed
+    # for the read-only check.
+    assert "302" in page.locator("#redirect-status-summary-value").text_content()
+
+    # Open the advanced section to reach the field + button.
+    _expand_redirect_status(page)
     assert "302" in page.locator("#current-redirect-status").input_value()
     promote_btn = page.locator("#promote-301-btn")
     assert promote_btn.is_enabled()
@@ -38,8 +53,10 @@ def test_promote_to_301_disables_button_and_updates_status(signed_in_page):
     page.wait_for_function(
         "() => document.getElementById('promote-301-btn').disabled === true"
     )
-    assert "Promoted" in promote_btn.text_content()
+    assert "Already 301" in promote_btn.text_content()
     assert "301" in page.locator("#current-redirect-status").input_value()
+    # Summary value reflects the new state even after re-collapse.
+    assert "301" in page.locator("#redirect-status-summary-value").text_content()
 
     # Audit timeline gains the "Promoted to 301" entry (the friendly
     # label, not the raw `promote_to_301` action name).
@@ -54,6 +71,7 @@ def test_promote_to_301_can_be_cancelled_via_dialog(signed_in_page):
     the button must stay enabled at 302."""
     page, _ = signed_in_page
     _create_qr(page)
+    _expand_redirect_status(page)
 
     page.on("dialog", lambda d: d.dismiss())
     page.locator("#promote-301-btn").click()
@@ -61,6 +79,26 @@ def test_promote_to_301_can_be_cancelled_via_dialog(signed_in_page):
 
     assert page.locator("#promote-301-btn").is_enabled()
     assert "302" in page.locator("#current-redirect-status").input_value()
+
+
+def test_promote_to_301_details_collapsed_by_default(signed_in_page):
+    """Regression for the misclick concern: a fresh QR must NOT show
+    the Promote button — the <details> section is collapsed, summary
+    shows just the current 302 state."""
+    page, _ = signed_in_page
+    _create_qr(page)
+
+    # <details>.open === false; the button is in the DOM but its
+    # parent is collapsed so it's display:none.
+    is_open = page.evaluate(
+        "() => document.getElementById('redirect-status-details').open"
+    )
+    assert is_open is False
+    # Summary surface is the only thing the user sees, and it reads
+    # the current status — no button anywhere near the readonly
+    # affordances above.
+    assert page.locator("#redirect-status-summary-value").is_visible()
+    assert not page.locator("#promote-301-btn").is_visible()
 
 
 # ---------------------------------------------------------------------

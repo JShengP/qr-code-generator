@@ -896,11 +896,89 @@ button.tertiary:hover {
   font-weight: 500;
 }
 
-#promote-301-btn[disabled] {
-  opacity: 0.6;
+/* Promote-to-301 lives behind a collapsed <details> on purpose
+ * (one-way operation, easy to misclick if it sits next to Copy
+ * and API token). The "danger-soft" variant is yellow-amber to
+ * signal "careful" without screaming "destructive" — it's not
+ * losing data, but it can't be undone either. */
+.danger-soft {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f5c87a;
+  border: 1px solid #b97a2e;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.danger-soft:hover {
+  background: rgba(245, 158, 11, 0.28);
+  color: #f5d8a8;
+}
+
+.danger-soft[disabled] {
+  opacity: 0.5;
   cursor: not-allowed;
-  background: rgba(91, 158, 255, 0.15);
+  background: rgba(91, 158, 255, 0.12);
   color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Collapsible "Redirect status" field — summary acts as the row
+ * the user sees by default; only when they expand does the
+ * promote button surface. Styling mirrors the .field rows above
+ * so it doesn't visually pop. */
+.redirect-status-advanced {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+}
+
+.redirect-status-advanced > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  list-style: revert; /* keep the native disclosure triangle */
+}
+
+.redirect-status-advanced > summary:hover {
+  color: var(--text);
+}
+
+.redirect-status-summary-value {
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+/* When already promoted, paint the summary value in the accent
+ * color so the 301 state is visible without expanding. */
+.redirect-status-advanced .redirect-status-summary-value:not(:empty):where(
+  [class],
+  *
+) {
+  color: inherit;
+}
+/* Simpler: select on textContent via a class flip in JS would be
+ * cleaner — but the bare attribute selector below catches the
+ * canonical "301" prefix without needing JS to add a marker class. */
+
+.redirect-status-advanced > .hint {
+  margin: 0.6rem 0 0.5rem;
+  font-style: normal;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.redirect-status-advanced > .row {
+  margin-top: 0.25rem;
 }
 
 .analytics-controls {
