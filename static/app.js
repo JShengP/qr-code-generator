@@ -384,6 +384,8 @@ const _FRIENDLY_ACTION = {
   patch_expires: "Updated expiration",
   delete: "Deleted",
   rotate_edit_token: "Rotated edit token",
+  promote_to_301: "Promoted to 301",
+  restore: "Restored",
 };
 
 async function refreshAuditTimeline(token) {
