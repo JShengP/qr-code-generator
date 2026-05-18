@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from . import config
 from .database import get_db
 from .models import User, UserSession
+from .url_helpers import base_url as _base_url
 
 github_router = APIRouter(prefix="/api/auth/github", tags=["auth", "github"])
 
@@ -73,7 +74,14 @@ def github_login(request: Request):
         )
 
     state = token_urlsafe(32)
-    redirect_uri = f"{config.BASE_URL}/api/auth/github/callback"
+    # Auto-derive in dev so the redirect_uri matches the actual port
+    # uvicorn is reachable on. The GitHub OAuth app MUST have this
+    # exact URL registered as a callback (Settings → Developer
+    # settings → OAuth apps → "Authorization callback URL") —
+    # GitHub now allows multiple callback URLs per app, so a dev
+    # can register both `http://127.0.0.1:8001/...` and the
+    # production `https://qr.example.com/...` on the same app.
+    redirect_uri = f"{_base_url(request)}/api/auth/github/callback"
 
     authorize_url = (
         "https://github.com/login/oauth/authorize"
@@ -98,6 +106,7 @@ def github_login(request: Request):
 
 @github_router.get("/callback")
 def github_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
@@ -137,7 +146,11 @@ def github_callback(
             "client_id": config.GITHUB_CLIENT_ID,
             "client_secret": config.GITHUB_CLIENT_SECRET,
             "code": code,
-            "redirect_uri": f"{config.BASE_URL}/api/auth/github/callback",
+            # MUST match what was sent in /login above. GitHub validates
+            # this server-side as part of the exchange — a mismatch
+            # here looks identical to "wrong client_secret" from the
+            # caller's POV.
+            "redirect_uri": f"{_base_url(request)}/api/auth/github/callback",
         },
         headers={"Accept": "application/json"},
         timeout=_TIMEOUT,
