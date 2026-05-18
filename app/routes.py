@@ -57,6 +57,25 @@ redirect_cache: TTLCache = TTLCache(maxsize=10_000, ttl=3600)
 # https://qr.example.com). Re-exposed at module scope so tests can
 # monkey-patch one location without re-reading env.
 BASE_URL = config.BASE_URL
+BASE_URL_AUTO = config.BASE_URL_AUTO
+
+
+def _base_url(request: Request) -> str:
+    """Where to point short URLs / QR-encoded URLs.
+
+    Production (or any env that explicitly set BASE_URL): returns the
+    configured value verbatim. Dev (no BASE_URL set): derives from
+    `request.base_url` so the short URL matches whatever hostname /
+    port the user typed in their browser. Without this the UI shows
+    `http://localhost:8000/r/...` even when uvicorn is actually
+    bound to :8001, which is a confusing dev experience.
+
+    Stripping the trailing slash because `str(request.base_url)`
+    always ends in `/` and we always concatenate `/r/{token}` after.
+    """
+    if BASE_URL_AUTO:
+        return str(request.base_url).rstrip("/")
+    return BASE_URL
 
 # Per-(token, ip) timestamp of the most recent scan we recorded. Used to
 # dedupe rapid-fire refreshes from the same client so a single attacker
@@ -214,7 +233,8 @@ def create_qr(
     _log_audit(db, mapping, user, request, "create", after=normalized_url)
     db.commit()
 
-    short_url = f"{BASE_URL}/r/{token}"
+    base = _base_url(request)
+    short_url = f"{base}/r/{token}"
 
     # Warm cache with the same expiry the DB sees, so the redirect handler
     # can short-circuit without a DB hit. Fresh QRs are 302 by default.
@@ -223,7 +243,7 @@ def create_qr(
     return CreateResponse(
         token=token,
         short_url=short_url,
-        qr_code_url=f"{BASE_URL}/api/qr/{token}/image",
+        qr_code_url=f"{base}/api/qr/{token}/image",
         original_url=normalized_url,
         edit_token=edit_token_plain,
     )
@@ -307,6 +327,7 @@ def redirect(token: str, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/api/qr/mine", response_model=MyQRsResponse)
 def list_my_qrs(
+    request: Request,
     db: Session = Depends(get_db),
     user: User | None = Depends(get_current_user),
     include_deleted: bool = Query(
@@ -364,12 +385,13 @@ def list_my_qrs(
         "destination": UrlMapping.original_url.asc(),
     }
     rows = q.order_by(sort_map[sort]).all()
+    base = _base_url(request)
 
     return MyQRsResponse(
         items=[
             QRSummary(
                 token=r.token,
-                short_url=f"{BASE_URL}/r/{r.token}",
+                short_url=f"{base}/r/{r.token}",
                 original_url=r.original_url,
                 created_at=r.created_at,
                 updated_at=r.updated_at,
@@ -616,6 +638,7 @@ def restore_qr(
 @router.get("/api/qr/{token}/image")
 def get_qr_image(
     token: str,
+    request: Request,
     db: Session = Depends(get_db),
     download: bool = Query(
         default=False,
@@ -627,7 +650,7 @@ def get_qr_image(
     # soft-deleted rows so the Restore preview in the UI can show
     # what's about to be brought back.
     _get_mapping_any_state_or_404(token, db)
-    short_url = f"{BASE_URL}/r/{token}"
+    short_url = f"{_base_url(request)}/r/{token}"
 
     img = qrcode.make(short_url)
     buf = io.BytesIO()

@@ -36,7 +36,19 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./qr_code.db")
 # --- Public-facing URL --------------------------------------------------
 # Used to construct `short_url` and `qr_code_url` in API responses, and
 # what the QR-code PNG actually encodes.
-BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
+#
+# Two-mode resolution:
+#   - Env var set (any environment): use that value verbatim. Required
+#     in production so the QR encodes the public domain, not whatever
+#     internal hostname uvicorn happens to be reachable at.
+#   - Env var unset AND not production: routes auto-derive from the
+#     incoming `request.base_url` (handled in app.routes._base_url).
+#     Means the dev short URL always matches the hostname/port the
+#     user typed in their browser — no more "Short URL says :8000 but
+#     my uvicorn is on :8001" foot-gun when iterating.
+_BASE_URL_RAW: str | None = os.getenv("BASE_URL")
+BASE_URL: str = _BASE_URL_RAW or "http://localhost:8000"
+BASE_URL_AUTO: bool = _BASE_URL_RAW is None and not IS_PRODUCTION
 
 # --- slowapi rate limits ------------------------------------------------
 CREATE_RATE_LIMIT: str = os.getenv("CREATE_RATE_LIMIT", "10/minute")

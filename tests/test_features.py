@@ -361,6 +361,41 @@ def test_create_response_now_includes_redirect_status_default_302(client):
     assert info["redirect_status"] == 302
 
 
+def test_short_url_auto_derives_from_request_host_in_dev(client, monkeypatch):
+    """When BASE_URL env var isn't set (the dev default), short_url
+    should follow whatever host:port the user actually accessed —
+    NOT the hardcoded `http://localhost:8000`. Otherwise a dev who
+    runs uvicorn on port 8001 sees a short URL that points at
+    nothing (the foot-gun that prompted this auto-derive)."""
+    from app import routes as routes_module
+
+    # Force the auto-derive path even if the test env happens to
+    # have BASE_URL set globally.
+    monkeypatch.setattr(routes_module, "BASE_URL_AUTO", True)
+
+    r = client.post("/api/qr/create", json={"url": "https://example.com"})
+    data = r.json()
+    # TestClient hits the app at http://testserver/ — short_url MUST
+    # encode that, not the hardcoded fallback.
+    assert data["short_url"].startswith("http://testserver/r/")
+    assert data["qr_code_url"].startswith("http://testserver/api/qr/")
+
+
+def test_short_url_uses_explicit_base_url_when_configured(client, monkeypatch):
+    """When BASE_URL is explicit (production path), routes must use
+    that string verbatim — request.base_url is the internal proxy
+    address, not the public domain."""
+    from app import routes as routes_module
+
+    monkeypatch.setattr(routes_module, "BASE_URL_AUTO", False)
+    monkeypatch.setattr(routes_module, "BASE_URL", "https://qr.example.com")
+
+    r = client.post("/api/qr/create", json={"url": "https://example.com"})
+    data = r.json()
+    assert data["short_url"].startswith("https://qr.example.com/r/")
+    assert data["qr_code_url"].startswith("https://qr.example.com/api/qr/")
+
+
 def test_delete_populates_deleted_at(client):
     data = _create(client)
     token = data["token"]
