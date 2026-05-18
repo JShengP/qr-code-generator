@@ -23,6 +23,16 @@ const editError = $("edit-error");
 // authenticates via the browser's session cookie (owner shortcut),
 // so we only track the public 7-char token.
 let currentToken = null;
+// Whether the currently-open QR is soft-deleted. Drives the
+// Restore button visibility and the Delete button's disabled state.
+let currentIsDeleted = false;
+// Cached current redirect_status (302 or 301). Controls the
+// promote-to-301 button's disabled state so we don't have to
+// re-read the DOM.
+let currentRedirectStatus = 302;
+// Selection state for bulk delete — Set of tokens. Persists across
+// re-renders of the sidebar so a search/sort doesn't lose your picks.
+const bulkSelection = new Set();
 
 createForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -165,6 +175,74 @@ $("delete-qr").addEventListener("click", () => {
   _softDeleteQR(currentToken);
 });
 
+$("restore-qr").addEventListener("click", async () => {
+  if (!currentToken) return;
+  try {
+    const r = await fetch(`/api/qr/${currentToken}/restore`, {
+      method: "POST",
+      credentials: "same-origin",
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({ detail: r.statusText }));
+      alert(`Restore failed: ${formatError(body, r.status)}`);
+      return;
+    }
+    const data = await r.json();
+    _applyDeletedState(false);
+    showEditOK(`Restored ${data.token}. Redirect resumes from the next scan.`);
+    refreshMyQRs();
+    refreshAuditTimeline(currentToken);
+  } catch (err) {
+    alert(`Network error: ${err.message}`);
+  }
+});
+
+$("promote-301-btn").addEventListener("click", async () => {
+  if (!currentToken || currentRedirectStatus === 301) return;
+  const ok = confirm(
+    "Promote to a permanent 301 redirect?\n\n" +
+    "Browsers and HTTP clients cache 301s aggressively (often forever). " +
+    "After this:\n" +
+    "  • Subsequent destination changes may not reach already-cached clients.\n" +
+    "  • Analytics will under-count: cached clients skip our server entirely.\n" +
+    "  • This is a ONE-WAY operation. You cannot demote back to 302.\n\n" +
+    "Continue?"
+  );
+  if (!ok) return;
+  try {
+    const r = await fetch(`/api/qr/${currentToken}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ redirect_status: 301 }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({ detail: r.statusText }));
+      showEditError(formatError(body, r.status));
+      return;
+    }
+    const data = await r.json();
+    _applyRedirectStatus(data.redirect_status);
+    showEditOK("Promoted to 301. Subsequent edits may not propagate.");
+    refreshAuditTimeline(currentToken);
+  } catch (err) {
+    showEditError(`Network error: ${err.message}`);
+  }
+});
+
+// Analytics date-range filter — change either input to re-fetch.
+$("analytics-from").addEventListener("change", () => {
+  if (currentToken) refreshAnalytics(currentToken);
+});
+$("analytics-to").addEventListener("change", () => {
+  if (currentToken) refreshAnalytics(currentToken);
+});
+$("analytics-reset").addEventListener("click", () => {
+  $("analytics-from").value = "";
+  $("analytics-to").value = "";
+  if (currentToken) refreshAnalytics(currentToken);
+});
+
 $("reset").addEventListener("click", () => {
   // No "did you save edit_token?" prompt needed — the UI doesn't
   // expose it. The QR remains editable by this user via the
@@ -208,17 +286,65 @@ function renderResult(data) {
   $("original-url").value = data.original_url;
   $("token").value = data.token;
   $("current-expires").value = _formatExpires(data.expires_at);
+  _applyRedirectStatus(data.redirect_status ?? 302);
+  _applyDeletedState(false);
+  _setDownloadLink(data.token);
   currentToken = data.token;
   // We intentionally ignore data.edit_token here — the UI doesn't
   // expose it. The API still returns it for programmatic clients.
   createForm.hidden = true;
   resultPanel.hidden = false;
   hideEditFeedback();
+  _resetAnalyticsRange();
   // Kick off the secondary fetches (analytics + audit). Fresh QR
   // means 0 scans + 1 "create" audit row, but rendering them keeps
   // the layout consistent across fresh-create and sidebar-open paths.
   refreshAnalytics(data.token);
   refreshAuditTimeline(data.token);
+}
+
+function _applyRedirectStatus(status) {
+  currentRedirectStatus = status;
+  const label = status === 301 ? "301 (permanent — cached)" : "302 (temporary)";
+  $("current-redirect-status").value = label;
+  // Once promoted, the button can't take it back. Disable + relabel so
+  // the user understands the state without having to re-read the hint.
+  const btn = $("promote-301-btn");
+  if (status === 301) {
+    btn.disabled = true;
+    btn.textContent = "Promoted";
+    btn.title = "This link is already 301. Promotion is one-way.";
+  } else {
+    btn.disabled = false;
+    btn.textContent = "Promote to 301";
+    btn.title =
+      "Promote to a permanent 301 redirect. Browsers will cache the result aggressively; subsequent edits may not propagate. ONE-WAY operation.";
+  }
+}
+
+function _applyDeletedState(isDeleted) {
+  currentIsDeleted = isDeleted;
+  // Restore is only meaningful for deleted rows; Delete is hidden for
+  // them so the user doesn't click "delete an already-deleted thing".
+  $("restore-qr").hidden = !isDeleted;
+  $("delete-qr").hidden = isDeleted;
+  // Editing a deleted row would 404 because PATCH goes through
+  // _get_mapping_or_404. Block the form so we surface that up-front.
+  $("edit-form").querySelectorAll("input, button").forEach((el) => {
+    el.disabled = isDeleted;
+  });
+}
+
+function _setDownloadLink(token) {
+  const link = $("qr-download-link");
+  link.href = `/api/qr/${token}/image?download=1`;
+  link.setAttribute("download", `qr-${token}.png`);
+}
+
+function _resetAnalyticsRange() {
+  $("analytics-from").value = "";
+  $("analytics-to").value = "";
+  $("analytics-summary-suffix").textContent = "total scans";
 }
 
 function showError(msg) {
@@ -328,10 +454,20 @@ async function refreshAnalytics(token) {
   const chart = $("analytics-chart");
   chart.innerHTML = '<li class="empty">Loading…</li>';
   $("analytics-total").textContent = "—";
+  const from = $("analytics-from").value.trim();
+  const to = $("analytics-to").value.trim();
+  const qs = new URLSearchParams();
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  const url = `/api/qr/${token}/analytics${qs.toString() ? "?" + qs : ""}`;
+  // Suffix mirrors the active filter so "0 total scans" doesn't look
+  // like a bug when the user has narrowed to an empty window.
+  $("analytics-summary-suffix").textContent =
+    from || to
+      ? `scans in ${from || "earliest"} → ${to || "latest"}`
+      : "total scans";
   try {
-    const r = await fetch(`/api/qr/${token}/analytics`, {
-      credentials: "same-origin",
-    });
+    const r = await fetch(url, { credentials: "same-origin" });
     if (!r.ok) {
       chart.innerHTML = '<li class="empty">Analytics unavailable.</li>';
       return;
@@ -340,7 +476,7 @@ async function refreshAnalytics(token) {
     $("analytics-total").textContent = data.total_scans;
 
     if (data.scans_by_day.length === 0) {
-      chart.innerHTML = '<li class="empty">No scans yet.</li>';
+      chart.innerHTML = '<li class="empty">No scans in this range.</li>';
       return;
     }
     const max = Math.max(...data.scans_by_day.map((d) => d.count));
@@ -448,56 +584,213 @@ async function refreshMyQRs() {
   const sidebar = $("my-qrs");
   const list = $("my-qrs-list");
   const empty = $("my-qrs-empty");
+  // Build the query from the current control state. Any of the three
+  // can be empty/default; we only include non-defaults in the URL so
+  // the network tab stays readable.
+  const search = $("my-qrs-search").value.trim();
+  const sort = $("my-qrs-sort").value;
+  const includeDeleted = $("my-qrs-include-deleted").checked;
+  const qs = new URLSearchParams();
+  if (search) qs.set("search", search);
+  if (sort && sort !== "created_desc") qs.set("sort", sort);
+  if (includeDeleted) qs.set("include_deleted", "1");
+  const url = `/api/qr/mine${qs.toString() ? "?" + qs : ""}`;
   try {
-    const r = await fetch("/api/qr/mine", { credentials: "same-origin" });
+    const r = await fetch(url, { credentials: "same-origin" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     sidebar.hidden = false;
     list.innerHTML = "";
+    // Prune selection of tokens that fell out of the current view
+    // (e.g. after a search narrows the list). Otherwise the bulk-bar
+    // count includes ghosts the user can't see.
+    const visibleTokens = new Set(data.items.map((i) => i.token));
+    for (const tok of [...bulkSelection]) {
+      if (!visibleTokens.has(tok)) bulkSelection.delete(tok);
+    }
+    _refreshBulkBar();
     if (data.items.length === 0) {
+      // Distinct empty-states: "no QRs at all" vs "filter excluded them all".
+      empty.textContent =
+        search || includeDeleted || sort !== "created_desc"
+          ? "No QRs match the current filter."
+          : "You haven't created any QR codes yet.";
       empty.hidden = false;
       return;
     }
     empty.hidden = true;
     for (const item of data.items) {
-      const li = document.createElement("li");
-
-      // Click-target column: token + destination. Held inside its
-      // own <div> so the × button can sit next to it without being
-      // part of the click area that opens the QR.
-      const main = document.createElement("div");
-      main.className = "qr-row";
-      const tokenSpan = document.createElement("span");
-      tokenSpan.className = "token";
-      tokenSpan.textContent = item.token;
-      const destSpan = document.createElement("span");
-      destSpan.className = "destination";
-      destSpan.textContent = item.original_url;
-      main.appendChild(tokenSpan);
-      main.appendChild(destSpan);
-      main.addEventListener("click", () => openOwnedQR(item));
-
-      // Per-row × delete button. Hidden by default, revealed on
-      // row hover via CSS; stops propagation so clicking it doesn't
-      // also trigger the row's openOwnedQR handler.
-      const delBtn = document.createElement("button");
-      delBtn.className = "qr-row-delete";
-      delBtn.type = "button";
-      delBtn.title = `Delete ${item.token}`;
-      delBtn.setAttribute("aria-label", `Delete ${item.token}`);
-      delBtn.textContent = "×";
-      delBtn.addEventListener("click", (event) => {
-        event.stopPropagation();
-        _softDeleteQR(item.token);
-      });
-
-      li.appendChild(main);
-      li.appendChild(delBtn);
-      list.appendChild(li);
+      list.appendChild(_renderQrRow(item));
     }
   } catch {
     sidebar.hidden = true;
   }
+}
+
+function _renderQrRow(item) {
+  const li = document.createElement("li");
+  if (item.is_deleted) li.classList.add("deleted");
+
+  // Bulk-select checkbox. Stops propagation so toggling doesn't also
+  // fire the row's open handler. Deleted rows don't get a checkbox —
+  // bulk-delete on already-deleted rows is a no-op; offering it is
+  // just visual noise.
+  if (!item.is_deleted) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "qr-row-check";
+    cb.setAttribute("aria-label", `Select ${item.token} for bulk action`);
+    cb.checked = bulkSelection.has(item.token);
+    cb.addEventListener("click", (event) => event.stopPropagation());
+    cb.addEventListener("change", () => {
+      if (cb.checked) bulkSelection.add(item.token);
+      else bulkSelection.delete(item.token);
+      _refreshBulkBar();
+    });
+    li.appendChild(cb);
+  } else {
+    // Spacer so checkbox-less rows still align with checkboxed ones.
+    const spacer = document.createElement("span");
+    spacer.className = "qr-row-check-spacer";
+    li.appendChild(spacer);
+  }
+
+  // Click-target column: token + destination.
+  const main = document.createElement("div");
+  main.className = "qr-row";
+  const tokenSpan = document.createElement("span");
+  tokenSpan.className = "token";
+  tokenSpan.textContent = item.token;
+  if (item.redirect_status === 301) {
+    const pill = document.createElement("span");
+    pill.className = "status-pill status-301";
+    pill.textContent = "301";
+    pill.title = "Promoted to permanent 301 redirect.";
+    tokenSpan.appendChild(document.createTextNode(" "));
+    tokenSpan.appendChild(pill);
+  }
+  if (item.is_deleted) {
+    const pill = document.createElement("span");
+    pill.className = "status-pill status-deleted";
+    pill.textContent = "deleted";
+    tokenSpan.appendChild(document.createTextNode(" "));
+    tokenSpan.appendChild(pill);
+  }
+  const destSpan = document.createElement("span");
+  destSpan.className = "destination";
+  destSpan.textContent = item.original_url;
+  main.appendChild(tokenSpan);
+  main.appendChild(destSpan);
+  main.addEventListener("click", () => openOwnedQR(item));
+
+  // Per-row × delete (live rows) OR restore (deleted rows). Both
+  // hidden until row hover via CSS; stop propagation so they don't
+  // also trigger the row's open handler.
+  const actionBtn = document.createElement("button");
+  actionBtn.className = "qr-row-delete";
+  actionBtn.type = "button";
+  if (item.is_deleted) {
+    actionBtn.title = `Restore ${item.token}`;
+    actionBtn.setAttribute("aria-label", `Restore ${item.token}`);
+    actionBtn.textContent = "↻";
+    actionBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      _restoreQR(item.token);
+    });
+  } else {
+    actionBtn.title = `Delete ${item.token}`;
+    actionBtn.setAttribute("aria-label", `Delete ${item.token}`);
+    actionBtn.textContent = "×";
+    actionBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      _softDeleteQR(item.token);
+    });
+  }
+
+  li.appendChild(main);
+  li.appendChild(actionBtn);
+  return li;
+}
+
+async function _restoreQR(token) {
+  try {
+    const r = await fetch(`/api/qr/${token}/restore`, {
+      method: "POST",
+      credentials: "same-origin",
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({ detail: r.statusText }));
+      alert(`Restore failed: ${formatError(body, r.status)}`);
+      return;
+    }
+    // If the restored QR is the one open in the result panel, sync
+    // its delete-state so the buttons swap back.
+    if (currentToken === token) {
+      _applyDeletedState(false);
+      refreshAuditTimeline(token);
+    }
+    refreshMyQRs();
+  } catch (err) {
+    alert(`Network error: ${err.message}`);
+  }
+}
+
+function _refreshBulkBar() {
+  const bar = $("my-qrs-bulk-bar");
+  const count = bulkSelection.size;
+  $("my-qrs-bulk-count").textContent = count;
+  bar.hidden = count === 0;
+}
+
+// Sidebar control wiring.
+$("my-qrs-search").addEventListener("input", _debounce(refreshMyQRs, 200));
+$("my-qrs-sort").addEventListener("change", refreshMyQRs);
+$("my-qrs-include-deleted").addEventListener("change", refreshMyQRs);
+
+$("my-qrs-bulk-clear").addEventListener("click", () => {
+  bulkSelection.clear();
+  refreshMyQRs();
+});
+
+$("my-qrs-bulk-delete").addEventListener("click", async () => {
+  if (bulkSelection.size === 0) return;
+  const tokens = [...bulkSelection];
+  const ok = confirm(
+    `Delete ${tokens.length} QR${tokens.length === 1 ? "" : "s"}? ` +
+    "Each becomes a 410 on next scan; rows stay in the audit log."
+  );
+  if (!ok) return;
+  try {
+    const r = await fetch("/api/qr/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ tokens }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({ detail: r.statusText }));
+      alert(`Bulk delete failed: ${formatError(body, r.status)}`);
+      return;
+    }
+    bulkSelection.clear();
+    // If the currently-open QR got deleted in the batch, reset the view.
+    if (currentToken && tokens.includes(currentToken)) {
+      resetCreateView();
+    }
+    refreshMyQRs();
+  } catch (err) {
+    alert(`Network error: ${err.message}`);
+  }
+});
+
+// Tiny debounce so typing in the search box doesn't fire a request
+// per keystroke. 200 ms feels instant but absorbs a fast typist.
+function _debounce(fn, ms) {
+  let timer = null;
+  return (...args) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
 }
 
 function openOwnedQR(item) {
@@ -508,10 +801,14 @@ function openOwnedQR(item) {
   $("original-url").value = item.original_url;
   $("token").value = item.token;
   $("current-expires").value = _formatExpires(item.expires_at);
+  _applyRedirectStatus(item.redirect_status ?? 302);
+  _applyDeletedState(Boolean(item.is_deleted));
+  _setDownloadLink(item.token);
   currentToken = item.token;
   $("create-form").hidden = true;
   $("result").hidden = false;
   hideEditFeedback();
+  _resetAnalyticsRange();
   refreshAnalytics(item.token);
   refreshAuditTimeline(item.token);
 }

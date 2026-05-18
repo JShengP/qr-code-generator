@@ -326,60 +326,60 @@ Conftest now resets `_scan_last_seen`, `SCAN_DEDUP_WINDOW`, and `REDIRECT_RATE_L
 - Behind a reverse proxy, `request.client.host` is the proxy IP, so dedup keys collapse all real users to one bucket. Same caveat as the slowapi `key_func` â€” production needs `X-Forwarded-For` parsing.
 - The dedup dict is per-worker. Multiple uvicorn workers each track their own state, so a worker-bouncing attacker can multiply their DB write rate by `min(workers, connections)`. A Redis-backed implementation closes this.
 
-## Post-review #5 ¡X PATCH/DELETE rate limit + endpoint-keyed slowapi
+## Post-review #5 ï¿½X PATCH/DELETE rate limit + endpoint-keyed slowapi
 
-Closed three findings together ¡X commits `bb717f8` and `5828a0a`.
+Closed three findings together ï¿½X commits `bb717f8` and `5828a0a`.
 
-- **MUTATION_RATE_LIMIT (30/min/IP)** on `update_qr`, `delete_qr`, and `rotate_edit_token_route`. Defense-in-depth on the bearer-token check ¡X a 256-bit edit_token is already brute-force-infeasible, but the limit caps the noise.
+- **MUTATION_RATE_LIMIT (30/min/IP)** on `update_qr`, `delete_qr`, and `rotate_edit_token_route`. Defense-in-depth on the bearer-token check ï¿½X a 256-bit edit_token is already brute-force-infeasible, but the limit caps the noise.
 - **slowapi key_style = "endpoint"** (was the default "url"). With URL keying, every distinct `/api/qr/{token}` path got its own bucket, so an attacker iterating tokens bypassed the rate limit entirely. With endpoint keying, all PATCH calls from one IP share a bucket regardless of which token's path they hit. Caught only because a test failed.
 
-## Post-review #6 ¡X `cachetools.TTLCache` for the redirect cache
+## Post-review #6 ï¿½X `cachetools.TTLCache` for the redirect cache
 
-`redirect_cache` was an unbounded dict ¡X `7af3eef`. Swapped for `TTLCache(maxsize=10_000, ttl=3600)`. LRU eviction at 10k entries caps memory at ~1 MB even under sustained attack. The 1-hour cache-freshness TTL is independent of the QR's own `expires_at`, which is still re-checked on every hit so a time-limited link 410s the instant it passes expiry (no waiting an hour for the cache to age out).
+`redirect_cache` was an unbounded dict ï¿½X `7af3eef`. Swapped for `TTLCache(maxsize=10_000, ttl=3600)`. LRU eviction at 10k entries caps memory at ~1 MB even under sustained attack. The 1-hour cache-freshness TTL is independent of the QR's own `expires_at`, which is still re-checked on every hit so a time-limited link 410s the instant it passes expiry (no waiting an hour for the cache to age out).
 
-## Post-review #7 ¡X batched scan-event writes
+## Post-review #7 ï¿½X batched scan-event writes
 
-Hot-path INSERT-then-commit per redirect dominated cost ¡X `9339213`. New flow: `_record_scan` appends to a thread-safe `_pending_scans` list; `_flush_scans_to_db` does one bulk INSERT when either `SCAN_FLUSH_BATCH_SIZE` (default 10) or `SCAN_FLUSH_INTERVAL` (default 5s) is hit. `/analytics` and lifespan-shutdown both force-flush.
+Hot-path INSERT-then-commit per redirect dominated cost ï¿½X `9339213`. New flow: `_record_scan` appends to a thread-safe `_pending_scans` list; `_flush_scans_to_db` does one bulk INSERT when either `SCAN_FLUSH_BATCH_SIZE` (default 10) or `SCAN_FLUSH_INTERVAL` (default 5s) is hit. `/analytics` and lifespan-shutdown both force-flush.
 
 Subtle bug found mid-implementation: `_last_flush_time = 0.0` paired with `time.monotonic()` (which returns millions of seconds) made `now - last_flush >= 5s` ALWAYS true. Initialized to `time.monotonic()` at module load instead.
 
-## Post-review #8 ¡X env-driven config
+## Post-review #8 ï¿½X env-driven config
 
-Centralized all knobs in `app/config.py` ¡X `5828a0a`. Module reads `os.environ` once at import; modules that need a value pull from there and re-expose at module scope so tests still monkey-patch one location.
+Centralized all knobs in `app/config.py` ï¿½X `5828a0a`. Module reads `os.environ` once at import; modules that need a value pull from there and re-expose at module scope so tests still monkey-patch one location.
 
 Env vars added: `BASE_URL`, `CREATE_RATE_LIMIT`, `REDIRECT_RATE_LIMIT`, `MUTATION_RATE_LIMIT`, `RATE_LIMIT_STORAGE_URI`, `SCAN_DEDUP_WINDOW`, `SCAN_FLUSH_BATCH_SIZE`, `SCAN_FLUSH_INTERVAL`, plus `DATABASE_URL` and `DEPLOY_ENV` already present. `database.py` now conditionally sets SQLite-only `check_same_thread=False` so Postgres/MySQL URLs work without further changes. `.env.example` checked in.
 
-## Post-review #9 ¡X IDN / punycode homograph fold
+## Post-review #9 ï¿½X IDN / punycode homograph fold
 
 `6cb0d97`. The blocklist matched the raw hostname only, so `?vil.com` (Cyrillic `?` U+0435) and `xn--vil-7ka.com` (the punycode form) both bypassed an entry like `evil.com`.
 
 New `_canonical_hostname()`:
 
 1. Decodes each `xn--` label back to Unicode via stdlib `encodings.idna`.
-2. NFKC-normalizes, then folds high-frequency Cyrillic/Greek lookalikes (`?¡÷a`, `?¡÷e`, `?¡÷o`, `?¡÷p`, `?¡÷c`, `?¡÷i`, etc.) using a hand-curated map sourced from Unicode TR39 confusables data.
+2. NFKC-normalizes, then folds high-frequency Cyrillic/Greek lookalikes (`?ï¿½ï¿½a`, `?ï¿½ï¿½e`, `?ï¿½ï¿½o`, `?ï¿½ï¿½p`, `?ï¿½ï¿½c`, `?ï¿½ï¿½i`, etc.) using a hand-curated map sourced from Unicode TR39 confusables data.
 
-`is_blocked_domain` now checks both the raw lowercased hostname AND its canonical skeleton. Legitimate IDNs like `¤é¥».jp` pass through (their characters aren't in the homograph map). Production would replace the hand map with `confusable_homoglyphs` for the full TR39 set.
+`is_blocked_domain` now checks both the raw lowercased hostname AND its canonical skeleton. Legitimate IDNs like `ï¿½é¥».jp` pass through (their characters aren't in the homograph map). Production would replace the hand map with `confusable_homoglyphs` for the full TR39 set.
 
-## Post-review #10 ¡X `edit_token` rotation endpoint
+## Post-review #10 ï¿½X `edit_token` rotation endpoint
 
-`4f68860`. `POST /api/qr/{token}/rotate-edit-token` accepts the current bearer (or the owner-session) and issues a fresh edit_token; the old token's hash is overwritten so it stops authenticating immediately. No admin override and no recovery flow ¡X the credential-shown-once contract is preserved.
+`4f68860`. `POST /api/qr/{token}/rotate-edit-token` accepts the current bearer (or the owner-session) and issues a fresh edit_token; the old token's hash is overwritten so it stops authenticating immediately. No admin override and no recovery flow ï¿½X the credential-shown-once contract is preserved.
 
 ---
 
-# User identity layer (Stages D-1 ¡÷ E-2)
+# User identity layer (Stages D-1 ï¿½ï¿½ E-2)
 
 The PROMPT.md spec doesn't mention users. We added the layer to support "My QRs" UX, fix the orphan-create UX problem, and have a forensic trail of who-did-what. Five commits, in order.
 
-## D-1 ¡X `feat(auth): magic-link auth core` (`9b2a198`)
+## D-1 ï¿½X `feat(auth): magic-link auth core` (`9b2a198`)
 
 New tables: `users`, `user_sessions`, `magic_links`. Four endpoints under `/api/auth`:
 
-- `POST /request-link` ¡X generate magic link, send via configured `EmailService`. Response intentionally vague ("if that email exists, link sent") to avoid enumeration. Rate-limited 3/min/IP.
-- `GET /verify` ¡X consume the link (single-use, 15-min TTL), find-or-create user, set `qrs_session` cookie, 303 to `/`.
-- `GET /me` ¡X current user or null.
-- `POST /logout` ¡X delete session row + clear cookie.
+- `POST /request-link` ï¿½X generate magic link, send via configured `EmailService`. Response intentionally vague ("if that email exists, link sent") to avoid enumeration. Rate-limited 3/min/IP.
+- `GET /verify` ï¿½X consume the link (single-use, 15-min TTL), find-or-create user, set `qrs_session` cookie, 303 to `/`.
+- `GET /me` ï¿½X current user or null.
+- `POST /logout` ï¿½X delete session row + clear cookie.
 
-**Session model:** opaque 256-bit random ID stored in `user_sessions`. No JWT ¡X revocation is one DELETE, no denylist needed alongside a signing key.
+**Session model:** opaque 256-bit random ID stored in `user_sessions`. No JWT ï¿½X revocation is one DELETE, no denylist needed alongside a signing key.
 
 **Email abstraction:** `EmailService` ABC, `ConsoleEmailService` prints the link to stdout in dev mode. Production routes through a real provider via env var.
 
@@ -388,26 +388,26 @@ New tables: `users`, `user_sessions`, `magic_links`. Four endpoints under `/api/
 1. **`from __future__ import annotations` + slowapi**: stringified annotations defeated FastAPI's body/query inference under slowapi's wrapper. Removed from `auth_routes.py`.
 2. **`request: Request` must be FIRST** in the route signature when `@limiter.limit` wraps it.
 
-## D-2 ¡X `feat(ui): magic-link sign-in/sign-out` (`3b55eb4`)
+## D-2 ï¿½X `feat(ui): magic-link sign-in/sign-out` (`3b55eb4`)
 
 UI surface for the D-1 backend: top-right auth bar with two states (anon / signed-in), sign-in modal with email input, logout button.
 
-## D-3 ¡X `feat(ownership): owner_id FK + GET /api/qr/mine` (`0824a1d`)
+## D-3 ï¿½X `feat(ownership): owner_id FK + GET /api/qr/mine` (`0824a1d`)
 
 `url_mappings.owner_id` FK (nullable for back-compat). `create_qr` tags new rows with the user_id if the caller is signed in. `_require_edit_authorization` accepts either the bearer **or** the owner shortcut (session cookie + matching owner_id).
 
-`GET /api/qr/mine` returns the user's owned, non-deleted QRs. Anonymous returns empty list (no 401 ¡X UI uses 200/empty as the "nothing to show" signal).
+`GET /api/qr/mine` returns the user's owned, non-deleted QRs. Anonymous returns empty list (no 401 ï¿½X UI uses 200/empty as the "nothing to show" signal).
 
-**Route ordering bug:** `/api/qr/mine` had to be registered BEFORE `/api/qr/{token}` ¡X FastAPI matches in registration order, so `/mine` was getting captured by the path param and 404ing.
+**Route ordering bug:** `/api/qr/mine` had to be registered BEFORE `/api/qr/{token}` ï¿½X FastAPI matches in registration order, so `/mine` was getting captured by the path param and 404ing.
 
 UI sidebar lists the user's QRs; clicking one opens the result panel via the owner shortcut.
 
-## E-1 + E-2 ¡X `feat(oauth): GitHub OAuth` (`23c5e66`, `2b70196`)
+## E-1 + E-2 ï¿½X `feat(oauth): GitHub OAuth` (`23c5e66`, `2b70196`)
 
 `oauth_github.py` adds `GET /api/auth/github/{login,callback,available}`. Login redirects to GitHub authorize with a state-cookie CSRF check; callback exchanges the code, fetches `/user` and `/user/emails`, and either:
 
-1. Finds an existing user by `(provider="github", provider_user_id=<gh_id>)` ¡X handles a GitHub-side email change.
-2. Falls back to matching by primary verified email ¡X links an existing magic-link account to the GitHub identity (account merge).
+1. Finds an existing user by `(provider="github", provider_user_id=<gh_id>)` ï¿½X handles a GitHub-side email change.
+2. Falls back to matching by primary verified email ï¿½X links an existing magic-link account to the GitHub identity (account merge).
 3. Otherwise creates a new user.
 
 Routes only register when both `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set. UI's "Continue with GitHub" button is gated on `GET /api/auth/github/available` returning 200.
@@ -416,7 +416,7 @@ Routes only register when both `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are
 
 `POST /api/qr/create` rejects anonymous callers with 401. The previous orphan-create UX (an anonymous QR whose only credential is a one-time edit_token) was confusing. UI updated to hide the Create form when signed-out and show a Sign-in CTA instead.
 
-Test surface: default `client` fixture pre-authenticates as `test-runner@example.com` via a real `/api/auth/verify` round-trip (NOT direct DB insert + `cookies.set` ¡X httpx is strict about cookie domain matching for manually-set cookies, and a hand-set cookie with `domain="testserver"` doesn't get sent on subsequent requests). Tests that exercise anonymous behavior call `client.cookies.clear()`.
+Test surface: default `client` fixture pre-authenticates as `test-runner@example.com` via a real `/api/auth/verify` round-trip (NOT direct DB insert + `cookies.set` ï¿½X httpx is strict about cookie domain matching for manually-set cookies, and a hand-set cookie with `domain="testserver"` doesn't get sent on subsequent requests). Tests that exercise anonymous behavior call `client.cookies.clear()`.
 
 ## edit_token removed from UI (`55b22f1` + `c3624f9`)
 
@@ -424,28 +424,70 @@ The API still issues + accepts `edit_token`, but the UI no longer shows it. Brow
 
 This collapsed three months of UX confusion: users were asked to "save this 256-bit token forever" for something they actually didn't need.
 
-# Post-review #11 ¡X `audit_logs` table
+# Post-review #11 ï¿½X `audit_logs` table
 
 `fa63e6c`. Every mutation on a `url_mappings` row writes an `audit_logs` entry: `(mapping_id, user_id, action, before_value, after_value, ip_address, created_at)`. Actions covered:
 
-- `create` ¡X after = normalized URL
-- `patch_url` ¡X before/after = old/new URL strings
-- `patch_expires` ¡X before/after = old/new ISO datetimes
-- `delete` ¡X no values (mapping_id + action is the record)
-- `rotate_edit_token` ¡X no values (logging the hashes would defeat the point of hashing them)
+- `create` ï¿½X after = normalized URL
+- `patch_url` ï¿½X before/after = old/new URL strings
+- `patch_expires` ï¿½X before/after = old/new ISO datetimes
+- `delete` ï¿½X no values (mapping_id + action is the record)
+- `rotate_edit_token` ï¿½X no values (logging the hashes would defeat the point of hashing them)
 
-`_log_audit` is called inside each route BEFORE its own commit, so the audit row lands in the same transaction as the mutation it describes ¡X a half-applied change can't end up unaudited. No public read endpoint yet; `GET /api/qr/{token}/audit` is a planned follow-up.
+`_log_audit` is called inside each route BEFORE its own commit, so the audit row lands in the same transaction as the mutation it describes ï¿½X a half-applied change can't end up unaudited. No public read endpoint yet; `GET /api/qr/{token}/audit` is a planned follow-up.
 
 # UI bugs caught only via live browser testing
 
 A theme across `4d926ff` / `1c8a668` / `a56806d` / `ebadd48` / `0cb6ffd` / `8fa6c84`: each is a UX bug that the 84-then-91 in-process pytest suite couldn't catch because they're rendering / state-management issues that need a real browser:
 
-- Sign-in modal stayed visible after the OAuth round-trip ¡X HTML `hidden` attribute outranked by `.modal { display: flex }`.
+- Sign-in modal stayed visible after the OAuth round-trip ï¿½X HTML `hidden` attribute outranked by `.modal { display: flex }`.
 - "Update destination" succeeded but sidebar still showed stale `original_url` on a subsequent click.
-- "Create" form stayed visible after submit ¡X `form { display: flex }` outranked HTML `hidden`.
+- "Create" form stayed visible after submit ï¿½X `form { display: flex }` outranked HTML `hidden`.
 - Logout left the result panel open with a now-dead "Update" button.
 - "Start over" left a blank page because resetCreateView delegated to refreshAuthState which doesn't run on that path.
 
 The recurring root cause for several of these was the same CSS specificity issue, eventually fixed globally with `[hidden] { display: none !important; }` (`ebadd48`). Saved as a project memory.
 
 Lesson, also recorded as memory: every UI commit needs a real-browser smoke pass before being declared done. Playwright e2e tests are flagged as a follow-up to enforce this without manual labor.
+
+## Stretch features (post-Stage-7 batch)
+
+Six "would be nice" items that landed in one PR after the core was stable: 302â†’301 promote flag, PNG download button, sidebar search/sort, analytics date range, soft-delete restore, bulk delete. Notes on the design choices that aren't obvious from the diff alone:
+
+### Tiny SQLite migration helper (`app/database.py`)
+
+`Base.metadata.create_all` is idempotent for whole tables but doesn't `ALTER TABLE ADD COLUMN` on tables that already exist. A pre-existing `qr_code.db` from before the stretch batch would crash on `redirect_status` queries. Added `apply_lightweight_migrations()`: SQLite-only, walks a small `_PENDING_COLUMNS` dict, and runs `ALTER TABLE ... ADD COLUMN ...` for any column that's missing. Postgres / MySQL deployments must use a real migration tool â€” we no-op there rather than masking config drift.
+
+This is deliberately *not* Alembic. A one-developer prototype with one SQLite file gets weight-appropriate machinery; the moment a second migration target appears, swap to Alembic.
+
+### Promote-to-301 modelled as `int`, not `bool`
+
+`redirect_status` is an `INTEGER NOT NULL DEFAULT 302` column, not an `is_permanent` boolean. The boolean reads cleaner but locks the surface to exactly two states; if 307/308 ever become useful the column rename + data migration is more painful than the up-front int. Trade is one more `Pydantic field_validator` to enforce "only 301 is acceptable for now" at the schema layer.
+
+**Promotion is one-way.** PATCH with `redirect_status=302` returns 422 (schema rejection). PATCH with `redirect_status=301` on an already-301 row returns 409 (so a duplicate request can't double-log the audit trail). The wider reason: a browser that's already cached a 301 won't see a demotion anyway, so allowing one in the API would lie to whoever read the audit log into thinking it had effect.
+
+### `_get_mapping_any_state_or_404` for read-only endpoints
+
+`_get_mapping_or_404` 404s soft-deleted rows (correct for the redirect path and PATCH/DELETE). But /image and /analytics on a deleted row are still useful when an owner is inspecting it before restoring â€” the QR image is a pure function of the short URL, and historical scan counts are immutable. Added a sibling helper that returns deleted rows so those two endpoints can surface them while the mutating + redirect paths still 410.
+
+### Bulk-delete is all-or-nothing
+
+If any token in a `POST /api/qr/bulk-delete` body isn't owned by the caller, the whole batch fails with 403 and zero rows are touched. The alternative â€” "deleted 4 of 5, the 5th was someone else's" â€” is the kind of surprise that turns into a support ticket. Idempotent on already-deleted rows: the response's `deleted` count is the number of *newly* deleted rows; re-running the same batch returns `deleted=0`.
+
+Owner-only â€” no bearer fallback. A request body holding N bearer tokens has no sane shape, and scripted clients that need bulk operations can loop over per-row DELETE just fine.
+
+### Sidebar filters: server-side, not client-side
+
+Search / sort / include_deleted all run as query params on `GET /api/qr/mine`. The "right" answer at sub-1000-row scale is the same payload size either way, but server-side filtering means the same code paths are exercised regardless of dataset size, and the moment a user crosses into "thousands of QRs" the UI doesn't have to be rewritten. `sort` is a regex-constrained `Query(pattern=...)` so an attacker can't inject ORDER BY shenanigans through `?sort=...`.
+
+### Bulk-selection state survives re-renders
+
+The sidebar re-fetches on every search keystroke (debounced 200 ms). Per-checkbox state in the DOM would reset every time; the user would lose their selection mid-search. Kept the selection in a module-level `Set<token>` and re-applied via `.checked = bulkSelection.has(item.token)` on each render. Selections for tokens that fell out of the current filter are pruned so the bulk-bar count doesn't include ghosts the user can't see.
+
+### Restore is a 409 on live rows, not idempotent 200
+
+`POST /api/qr/{token}/restore` on a row that's not deleted returns 409 instead of silently succeeding. An idempotent 200 here would mask UI bugs (Restore button rendering against the wrong state), and the UI never legitimately calls this on a live row. Same pattern as the second-promote-to-301 case.
+
+### Analytics date-range validates `from <= to` at the route
+
+Pydantic `Query(pattern=r"^\d{4}-\d{2}-\d{2}$")` catches garbage at the schema layer. The `from > to` check is a route-level 422 because the pattern is per-field. Otherwise a `?from=2026-12-01&to=2025-01-01` would silently return an empty chart and the user would think it's a "no scans in range" result rather than user error.

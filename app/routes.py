@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 
 import qrcode
 from cachetools import TTLCache
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from . import config
@@ -20,6 +20,8 @@ from .models import AuditLog, ScanEvent, UrlMapping, User
 from .schemas import (
     AuditEntry,
     AuditLogResponse,
+    BulkDeleteRequest,
+    BulkDeleteResponse,
     CreateRequest,
     CreateResponse,
     MyQRsResponse,
@@ -215,8 +217,8 @@ def create_qr(
     short_url = f"{BASE_URL}/r/{token}"
 
     # Warm cache with the same expiry the DB sees, so the redirect handler
-    # can short-circuit without a DB hit.
-    redirect_cache[token] = (normalized_url, expires_at)
+    # can short-circuit without a DB hit. Fresh QRs are 302 by default.
+    redirect_cache[token] = (normalized_url, expires_at, 302)
 
     return CreateResponse(
         token=token,
@@ -232,20 +234,21 @@ def create_qr(
 def redirect(token: str, request: Request, db: Session = Depends(get_db)):
     """Cache → DB → 404/410. The hottest path in the system.
 
-    The cache stores (url, expires_at) so we can serve permanent links
-    AND time-limited links from memory. On a cache hit past TTL we evict
-    the entry and fall through to the DB path, which produces the 410
-    response with the canonical "expired" detail.
+    The cache stores `(url, expires_at, status)` so we can serve
+    permanent links AND time-limited links AND promoted-to-301 links
+    from memory. On a cache hit past TTL we evict the entry and fall
+    through to the DB path, which produces the 410 response with the
+    canonical "expired" detail.
     """
     now = _now_naive()
 
     # ----- Cache path ---------------------------------------------------
     cached = redirect_cache.get(token)
     if cached is not None:
-        url, exp = cached
+        url, exp, status = cached
         if exp is None or exp > now:
             _record_scan(token, request, db)
-            return RedirectResponse(url=url, status_code=302)
+            return RedirectResponse(url=url, status_code=status)
         # Cached entry has expired — evict and let the DB path handle 410.
         redirect_cache.pop(token, None)
 
@@ -261,19 +264,33 @@ def redirect(token: str, request: Request, db: Session = Depends(get_db)):
     if mapping.expires_at is not None and mapping.expires_at <= now:
         raise HTTPException(status_code=410, detail="Gone — this link has expired")
 
-    # Warm cache with the DB-observed expiry so the next hit can short-circuit.
-    redirect_cache[token] = (mapping.original_url, mapping.expires_at)
+    # Warm cache with the DB-observed expiry + status so the next hit can short-circuit.
+    redirect_cache[token] = (mapping.original_url, mapping.expires_at, mapping.redirect_status)
 
     _record_scan(token, request, db)
-    return RedirectResponse(url=mapping.original_url, status_code=302)
+    return RedirectResponse(url=mapping.original_url, status_code=mapping.redirect_status)
 
 
 @router.get("/api/qr/mine", response_model=MyQRsResponse)
 def list_my_qrs(
     db: Session = Depends(get_db),
     user: User | None = Depends(get_current_user),
+    include_deleted: bool = Query(
+        default=False,
+        description="If true, include soft-deleted rows so the UI can offer Restore.",
+    ),
+    search: str | None = Query(
+        default=None,
+        max_length=200,
+        description="Case-insensitive substring match on token OR original_url.",
+    ),
+    sort: str = Query(
+        default="created_desc",
+        pattern="^(created_desc|created_asc|updated_desc|updated_asc|destination)$",
+        description="Sort order. Default newest-first.",
+    ),
 ):
-    """Return the signed-in user's owned, non-deleted QR codes.
+    """Return the signed-in user's owned QR codes.
 
     REGISTERED BEFORE `/api/qr/{token}` on purpose — FastAPI matches
     routes in registration order, and `mine` would otherwise be
@@ -283,17 +300,37 @@ def list_my_qrs(
     Anonymous callers get an empty list — the UI uses 200/empty as
     the "no QRs to show" signal, so it doesn't need a separate 401
     path just to render the sidebar header.
+
+    `include_deleted` / `search` / `sort` are applied server-side so a
+    user with thousands of QRs doesn't have to ship them all to the
+    client just to filter. (We're nowhere near that scale yet — same
+    pattern, smaller payload regardless.)
     """
     if user is None:
         return MyQRsResponse(items=[])
 
-    rows = (
-        db.query(UrlMapping)
-        .filter(UrlMapping.owner_id == user.id)
-        .filter(UrlMapping.is_deleted.is_(False))
-        .order_by(UrlMapping.created_at.desc())
-        .all()
-    )
+    q = db.query(UrlMapping).filter(UrlMapping.owner_id == user.id)
+    if not include_deleted:
+        q = q.filter(UrlMapping.is_deleted.is_(False))
+
+    if search:
+        like = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                UrlMapping.token.ilike(like),
+                UrlMapping.original_url.ilike(like),
+            )
+        )
+
+    sort_map = {
+        "created_desc": UrlMapping.created_at.desc(),
+        "created_asc": UrlMapping.created_at.asc(),
+        "updated_desc": UrlMapping.updated_at.desc(),
+        "updated_asc": UrlMapping.updated_at.asc(),
+        "destination": UrlMapping.original_url.asc(),
+    }
+    rows = q.order_by(sort_map[sort]).all()
+
     return MyQRsResponse(
         items=[
             QRSummary(
@@ -303,10 +340,81 @@ def list_my_qrs(
                 created_at=r.created_at,
                 updated_at=r.updated_at,
                 expires_at=r.expires_at,
+                redirect_status=r.redirect_status,
+                is_deleted=r.is_deleted,
+                deleted_at=r.deleted_at,
             )
             for r in rows
         ]
     )
+
+
+@router.post("/api/qr/bulk-delete", response_model=BulkDeleteResponse)
+@limiter.limit(_mutation_rate_limit)
+def bulk_delete_qrs(
+    req: BulkDeleteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
+):
+    """Soft-delete a batch of owned QRs in one transaction.
+
+    Owner-only — no bearer fallback. Bulk auth via per-row bearers
+    would mean N tokens in one request which the protocol doesn't
+    have a sane shape for. Programmatic clients that need bulk
+    operations can loop over the per-row DELETE endpoint.
+
+    All-or-nothing: if ANY token isn't owned by the caller, the
+    entire batch fails with 403 and no rows are touched. This avoids
+    "you deleted 4 of 5, the 5th was someone else's" surprises.
+    """
+    if user is None:
+        raise HTTPException(
+            status_code=401, detail="Sign in to bulk-delete QRs."
+        )
+
+    # Dedupe to avoid double-logging the same row if the client
+    # accidentally sent a token twice. Order is preserved in the
+    # response so callers can correlate with their input.
+    unique_tokens = list(dict.fromkeys(req.tokens))
+
+    rows = (
+        db.query(UrlMapping)
+        .filter(UrlMapping.token.in_(unique_tokens))
+        .all()
+    )
+    by_token = {r.token: r for r in rows}
+
+    for tok in unique_tokens:
+        row = by_token.get(tok)
+        if row is None:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown token: {tok}"
+            )
+        if row.owner_id != user.id:
+            # Same 403 string regardless of whether the row exists —
+            # no cross-user existence oracle via this endpoint.
+            raise HTTPException(
+                status_code=403,
+                detail="One or more tokens are not owned by you.",
+            )
+
+    now = _now_naive()
+    affected: list[str] = []
+    for tok in unique_tokens:
+        row = by_token[tok]
+        if row.is_deleted:
+            # Idempotent: re-deleting a deleted row is a no-op, not an
+            # error. The audit log already has the original delete.
+            continue
+        _log_audit(db, row, user, request, "delete")
+        row.is_deleted = True
+        row.deleted_at = now
+        redirect_cache.pop(row.token, None)
+        affected.append(row.token)
+
+    db.commit()
+    return BulkDeleteResponse(deleted=len(affected), tokens=affected)
 
 
 @router.get("/api/qr/{token}", response_model=QRInfoResponse)
@@ -350,6 +458,23 @@ def update_qr(
         )
         mapping.expires_at = new_expires
         # Invalidate cache
+        redirect_cache.pop(token, None)
+
+    if req.redirect_status is not None:
+        # Schema already validated this is 301. Reject the request
+        # outright if the row is already 301 — silently accepting it
+        # would create a duplicate audit-log entry for a no-op.
+        if mapping.redirect_status == 301:
+            raise HTTPException(
+                status_code=409,
+                detail="This link is already a 301 (permanent) redirect.",
+            )
+        _log_audit(
+            db, mapping, user, request, "promote_to_301",
+            before=str(mapping.redirect_status),
+            after="301",
+        )
+        mapping.redirect_status = 301
         redirect_cache.pop(token, None)
 
     db.commit()
@@ -402,47 +527,152 @@ def delete_qr(
     _require_edit_authorization(mapping, authorization, user)
     _log_audit(db, mapping, user, request, "delete")
     mapping.is_deleted = True
+    mapping.deleted_at = _now_naive()
     db.commit()
     # Invalidate cache
     redirect_cache.pop(token, None)
     return {"detail": "Deleted"}
 
 
+@router.post("/api/qr/{token}/restore", response_model=QRInfoResponse)
+@limiter.limit(_mutation_rate_limit)
+def restore_qr(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user),
+):
+    """Un-delete a soft-deleted QR. Owner-only.
+
+    Bypasses `_get_mapping_or_404` (which 404s deleted rows) by reading
+    the mapping directly. Bearer fallback isn't supported here on
+    purpose: a script holding the edit_token of a deleted QR would
+    normally have no way to discover it's deleted (the redirect 410s
+    without distinguishing). Restoration is a UI affordance for the
+    owner who's looking at the deleted-list, not a routine API op.
+    """
+    if user is None:
+        raise HTTPException(
+            status_code=401, detail="Sign in to restore a QR."
+        )
+
+    mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
+    if mapping is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if mapping.owner_id != user.id:
+        raise HTTPException(
+            status_code=403, detail="This QR is owned by another user."
+        )
+    if not mapping.is_deleted:
+        # Idempotency would let this 200, but a non-deleted "restore"
+        # is almost certainly a UI bug — surface it.
+        raise HTTPException(
+            status_code=409, detail="This QR is not deleted."
+        )
+
+    _log_audit(db, mapping, user, request, "restore")
+    mapping.is_deleted = False
+    mapping.deleted_at = None
+    db.commit()
+    db.refresh(mapping)
+    # Cache was cleared on the original delete; no eviction needed.
+    return mapping
+
+
 @router.get("/api/qr/{token}/image")
-def get_qr_image(token: str, db: Session = Depends(get_db)):
-    _get_mapping_or_404(token, db)
+def get_qr_image(
+    token: str,
+    db: Session = Depends(get_db),
+    download: bool = Query(
+        default=False,
+        description="If true, set Content-Disposition: attachment so the "
+        "browser saves the file as `qr-<token>.png` instead of rendering inline.",
+    ),
+):
+    # Image is a pure function of the short URL — render it even for
+    # soft-deleted rows so the Restore preview in the UI can show
+    # what's about to be brought back.
+    _get_mapping_any_state_or_404(token, db)
     short_url = f"{BASE_URL}/r/{token}"
 
     img = qrcode.make(short_url)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-    return StreamingResponse(buf, media_type="image/png")
+    headers = (
+        {"Content-Disposition": f'attachment; filename="qr-{token}.png"'}
+        if download
+        else None
+    )
+    return StreamingResponse(buf, media_type="image/png", headers=headers)
 
 
 @router.get("/api/qr/{token}/analytics")
-def get_analytics(token: str, db: Session = Depends(get_db)):
-    _get_mapping_or_404(token, db)
+def get_analytics(
+    token: str,
+    db: Session = Depends(get_db),
+    date_from: str | None = Query(
+        default=None,
+        alias="from",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="Inclusive lower bound on scan date (YYYY-MM-DD).",
+    ),
+    date_to: str | None = Query(
+        default=None,
+        alias="to",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="Inclusive upper bound on scan date (YYYY-MM-DD).",
+    ),
+):
+    """Total + per-day scan counts, optionally bounded by a date range.
+
+    Date params are inclusive on both ends and operate on the SQL
+    `DATE(scanned_at)` projection so a `from=2025-12-01&to=2025-12-31`
+    covers every scan in December regardless of time-of-day. Both
+    are independently optional; omitting them returns all-time.
+
+    Soft-deleted rows still report analytics: the scan history is
+    immutable, and an owner inspecting a deleted QR before restoring
+    it benefits from seeing the lifetime activity.
+    """
+    _get_mapping_any_state_or_404(token, db)
 
     # Buffered scans aren't yet visible to a COUNT/GROUP BY query —
     # drain the buffer first so a caller sees a consistent view.
     force_flush_pending_scans(db)
 
-    total = db.query(func.count(ScanEvent.id)).filter(ScanEvent.token == token).scalar()
-
-    daily = (
+    scoped_total = db.query(func.count(ScanEvent.id)).filter(ScanEvent.token == token)
+    scoped_daily = (
         db.query(
             func.date(ScanEvent.scanned_at).label("date"),
             func.count(ScanEvent.id).label("count"),
         )
         .filter(ScanEvent.token == token)
-        .group_by(func.date(ScanEvent.scanned_at))
-        .all()
     )
+
+    if date_from is not None:
+        scoped_total = scoped_total.filter(func.date(ScanEvent.scanned_at) >= date_from)
+        scoped_daily = scoped_daily.filter(func.date(ScanEvent.scanned_at) >= date_from)
+    if date_to is not None:
+        # Pattern validation prevents bad input here; sanity check that
+        # `from` doesn't post-date `to` so the empty result isn't
+        # mistaken for "no scans in range" silently.
+        if date_from is not None and date_from > date_to:
+            raise HTTPException(
+                status_code=422,
+                detail="`from` must be on or before `to`.",
+            )
+        scoped_total = scoped_total.filter(func.date(ScanEvent.scanned_at) <= date_to)
+        scoped_daily = scoped_daily.filter(func.date(ScanEvent.scanned_at) <= date_to)
+
+    total = scoped_total.scalar()
+    daily = scoped_daily.group_by(func.date(ScanEvent.scanned_at)).all()
 
     return {
         "token": token,
         "total_scans": total,
+        "from": date_from,
+        "to": date_to,
         "scans_by_day": [{"date": str(row.date), "count": row.count} for row in daily],
     }
 
@@ -507,6 +737,22 @@ def get_qr_audit(
 def _get_mapping_or_404(token: str, db: Session) -> UrlMapping:
     mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
     if mapping is None or mapping.is_deleted:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return mapping
+
+
+def _get_mapping_any_state_or_404(token: str, db: Session) -> UrlMapping:
+    """Same as `_get_mapping_or_404` but returns soft-deleted rows too.
+
+    Used by read-only endpoints where the deletion shouldn't hide the
+    underlying record from the owner who's trying to inspect or
+    restore it: the QR image (a pure function of the short URL), the
+    analytics chart (historical, owner already saw it before delete).
+    The redirect path itself still 410s — this only relaxes the
+    metadata endpoints.
+    """
+    mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
+    if mapping is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return mapping
 

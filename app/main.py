@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 
 from .auth_routes import auth_router
 from .config import GITHUB_OAUTH_ENABLED, IS_PRODUCTION
-from .database import Base, engine
+from .database import Base, apply_lightweight_migrations, engine
 from .limiter import limiter
 from .oauth_github import github_router
 from .routes import router
@@ -29,6 +29,9 @@ async def lifespan(app: FastAPI):
     instead of dropping them.
     """
     Base.metadata.create_all(bind=engine)
+    # Backfill any new columns onto an existing DB file. Idempotent on
+    # SQLite, no-op on Postgres / MySQL.
+    apply_lightweight_migrations()
     yield
     # Shutdown: flush any buffered scan events using a fresh session,
     # since per-request sessions are already torn down here.

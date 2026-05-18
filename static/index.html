@@ -118,6 +118,41 @@
   <!-- "My QRs" sidebar — only visible when signed in. -->
   <aside id="my-qrs" class="my-qrs" hidden>
     <h3>My QR codes</h3>
+    <!-- Search box + sort dropdown. Both re-fetch /api/qr/mine with
+         server-side filtering so we don't ship the whole list just to
+         narrow it on the client. -->
+    <div class="my-qrs-controls">
+      <input
+        type="search"
+        id="my-qrs-search"
+        placeholder="Search token or destination…"
+        autocomplete="off"
+      />
+      <select id="my-qrs-sort" aria-label="Sort QRs">
+        <option value="created_desc">Newest</option>
+        <option value="created_asc">Oldest</option>
+        <option value="updated_desc">Recently updated</option>
+        <option value="updated_asc">Least recently updated</option>
+        <option value="destination">Destination (A–Z)</option>
+      </select>
+    </div>
+    <div class="my-qrs-toggles">
+      <label class="toggle">
+        <input type="checkbox" id="my-qrs-include-deleted" />
+        Show deleted
+      </label>
+    </div>
+    <!-- Bulk-action bar — surfaces when ≥1 row is checked. Acts on
+         the union of currently-checked rows across re-renders. -->
+    <div class="my-qrs-bulk-bar" id="my-qrs-bulk-bar" hidden>
+      <span><strong id="my-qrs-bulk-count">0</strong> selected</span>
+      <button type="button" id="my-qrs-bulk-delete" class="danger">
+        Delete selected
+      </button>
+      <button type="button" id="my-qrs-bulk-clear" class="tertiary">
+        Clear
+      </button>
+    </div>
     <p class="hint" id="my-qrs-empty">
       You haven't created any QR codes yet.
     </p>
@@ -187,6 +222,14 @@
         Print this QR. The destination can be changed below without
         re-printing — the encoded short URL never changes.
       </p>
+      <!-- One-line action row under the QR. The download link uses the
+           HTML `download` attribute on /api/qr/{token}/image?download=1
+           so the browser saves the file rather than opening it. -->
+      <p class="qr-actions">
+        <a id="qr-download-link" class="qr-action-link" download>
+          ⬇ Download PNG
+        </a>
+      </p>
       <div class="result-fields">
         <div class="field">
           <label>Short URL</label>
@@ -222,6 +265,23 @@
           </label>
           <div class="row">
             <input id="current-expires" readonly />
+          </div>
+        </div>
+        <div class="field">
+          <label>
+            Redirect status
+            <span class="hint">(302 = re-checked every scan; 301 = cached forever)</span>
+          </label>
+          <div class="row">
+            <input id="current-redirect-status" readonly />
+            <button
+              type="button"
+              id="promote-301-btn"
+              class="copy"
+              title="Promote to a permanent 301 redirect. Browsers will cache the result aggressively; subsequent edits may not propagate. ONE-WAY operation."
+            >
+              Promote to 301
+            </button>
           </div>
         </div>
         <!-- edit_token is not exposed in the UI on purpose. The API
@@ -270,9 +330,25 @@
            below is owner-gated. -->
       <section id="analytics-panel" class="qr-subpanel">
         <h3>Analytics</h3>
+        <!-- Inclusive date range. Empty = all-time (the default). The
+             handler re-fetches /analytics with from/to query params,
+             so the chart and total reflect the filtered window. -->
+        <div class="analytics-controls">
+          <label>
+            From
+            <input type="date" id="analytics-from" autocomplete="off" />
+          </label>
+          <label>
+            To
+            <input type="date" id="analytics-to" autocomplete="off" />
+          </label>
+          <button type="button" id="analytics-reset" class="tertiary">
+            Clear range
+          </button>
+        </div>
         <p class="qr-subpanel-summary">
           <strong id="analytics-total">0</strong>
-          <span class="hint">total scans</span>
+          <span class="hint" id="analytics-summary-suffix">total scans</span>
         </p>
         <ul id="analytics-chart" class="analytics-chart"></ul>
       </section>
@@ -295,6 +371,11 @@
                dialog catches accidents. -->
         <button type="button" id="delete-qr" class="danger" title="Soft-delete this QR. The row stays in the audit log; the redirect becomes 410.">
           Delete this QR
+        </button>
+        <!-- Only rendered for soft-deleted rows opened from the
+             sidebar's "Show deleted" view. JS toggles visibility. -->
+        <button type="button" id="restore-qr" class="secondary" title="Un-delete this QR. The redirect resumes working from the next scan." hidden>
+          Restore this QR
         </button>
         <button type="button" id="reset" class="tertiary" title="Go back to the Create form; this QR is unchanged.">
           ← Start over

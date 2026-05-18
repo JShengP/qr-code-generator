@@ -42,6 +42,17 @@ class UrlMapping(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Soft-delete bookkeeping: when the row was marked deleted, and which
+    # user did it. Restore clears `deleted_at` (and is_deleted) and the
+    # event lands in audit_logs the same way delete does.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 302 (default) keeps every scan observable. Owners can promote to
+    # 301 once they're confident the destination is permanent — this is
+    # a ONE-WAY trip because clients cache 301s aggressively and the
+    # promotion fact propagates faster than any "undo". Modelled as an
+    # int (not a bool flag) so future status codes can slot in without
+    # a column rename.
+    redirect_status: Mapped[int] = mapped_column(Integer, default=302, nullable=False)
 
 
 class ScanEvent(Base):
