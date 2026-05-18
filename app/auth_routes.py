@@ -31,6 +31,7 @@ from .email_service import EmailService, get_email_service
 from .limiter import limiter
 from .models import MagicLink, User, UserSession
 from .schemas import MagicLinkRequest, MeResponse, UserResponse
+from .url_helpers import base_url as _base_url
 
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -78,7 +79,11 @@ def request_magic_link(
     db.add(MagicLink(token=magic_token, email=email, expires_at=expires_at))
     db.commit()
 
-    link_url = f"{config.BASE_URL}/api/auth/verify?token={magic_token}"
+    # Auto-derive from `request.base_url` in dev so the link the user
+    # clicks matches whatever port they're actually accessing on. In
+    # production this falls through to `config.BASE_URL` so emails
+    # always carry the public domain. See app/url_helpers.py.
+    link_url = f"{_base_url(request)}/api/auth/verify?token={magic_token}"
     email_svc.send_magic_link(email, link_url)
 
     return {"detail": "If that email exists, a sign-in link has been sent."}

@@ -61,18 +61,11 @@ BASE_URL_AUTO = config.BASE_URL_AUTO
 
 
 def _base_url(request: Request) -> str:
-    """Where to point short URLs / QR-encoded URLs.
-
-    Production (or any env that explicitly set BASE_URL): returns the
-    configured value verbatim. Dev (no BASE_URL set): derives from
-    `request.base_url` so the short URL matches whatever hostname /
-    port the user typed in their browser. Without this the UI shows
-    `http://localhost:8000/r/...` even when uvicorn is actually
-    bound to :8001, which is a confusing dev experience.
-
-    Stripping the trailing slash because `str(request.base_url)`
-    always ends in `/` and we always concatenate `/r/{token}` after.
-    """
+    """Wrapper that respects the routes-module monkey-patches used by
+    tests (`routes.BASE_URL` / `routes.BASE_URL_AUTO`) instead of
+    going straight through to `url_helpers.base_url`. Test fixtures
+    flip these locally to exercise both auto-derive and explicit
+    paths — see test_short_url_*."""
     if BASE_URL_AUTO:
         return str(request.base_url).rstrip("/")
     return BASE_URL
