@@ -159,6 +159,51 @@
     <ul id="my-qrs-list"></ul>
   </aside>
 
+  <!-- "Stats" sidebar — Analytics + History for the currently-open
+       QR. Symmetric with the My-QRs sidebar on the left so the main
+       panel stays narrow and focused on Create / Edit. Hidden until
+       a QR is opened; JS toggles visibility off the same currentToken
+       state machine that drives the result panel. -->
+  <aside id="qr-stats" class="qr-stats" hidden>
+    <!-- Analytics: scans this QR has received, with a simple
+         horizontal bar chart per day. The endpoint is public so
+         non-owners would see this too — only the audit timeline
+         below is owner-gated. -->
+    <section id="analytics-panel" class="qr-subpanel">
+      <h3>Analytics</h3>
+      <!-- Inclusive date range. Empty = all-time (the default). The
+           handler re-fetches /analytics with from/to query params,
+           so the chart and total reflect the filtered window. -->
+      <div class="analytics-controls">
+        <label>
+          From
+          <input type="date" id="analytics-from" autocomplete="off" />
+        </label>
+        <label>
+          To
+          <input type="date" id="analytics-to" autocomplete="off" />
+        </label>
+        <button type="button" id="analytics-reset" class="tertiary">
+          Clear range
+        </button>
+      </div>
+      <p class="qr-subpanel-summary">
+        <strong id="analytics-total">0</strong>
+        <span class="hint" id="analytics-summary-suffix">total scans</span>
+      </p>
+      <ul id="analytics-chart" class="analytics-chart"></ul>
+    </section>
+
+    <!-- History: the audit_log trail. Read endpoint is owner-only,
+         so anonymous users wouldn't see anything (they can't get
+         to this panel anyway since create is gated). Refreshed
+         after every Update / Delete. -->
+    <section id="history-panel" class="qr-subpanel">
+      <h3>History</h3>
+      <ol id="audit-timeline" class="audit-timeline"></ol>
+    </section>
+  </aside>
+
   <main>
     <header>
       <h1>QR Code Generator</h1>
@@ -324,43 +369,11 @@
       <div id="edit-status" class="alert alert-ok" hidden></div>
       <div id="edit-error" class="alert alert-error" hidden></div>
 
-      <!-- Analytics: scans this QR has received, with a simple
-           horizontal bar chart per day. The endpoint is public so
-           non-owners would see this too — only the audit timeline
-           below is owner-gated. -->
-      <section id="analytics-panel" class="qr-subpanel">
-        <h3>Analytics</h3>
-        <!-- Inclusive date range. Empty = all-time (the default). The
-             handler re-fetches /analytics with from/to query params,
-             so the chart and total reflect the filtered window. -->
-        <div class="analytics-controls">
-          <label>
-            From
-            <input type="date" id="analytics-from" autocomplete="off" />
-          </label>
-          <label>
-            To
-            <input type="date" id="analytics-to" autocomplete="off" />
-          </label>
-          <button type="button" id="analytics-reset" class="tertiary">
-            Clear range
-          </button>
-        </div>
-        <p class="qr-subpanel-summary">
-          <strong id="analytics-total">0</strong>
-          <span class="hint" id="analytics-summary-suffix">total scans</span>
-        </p>
-        <ul id="analytics-chart" class="analytics-chart"></ul>
-      </section>
-
-      <!-- History: the audit_log trail. Read endpoint is owner-only,
-           so anonymous users wouldn't see anything (they can't get
-           to this panel anyway since create is gated). Refreshed
-           after every Update / Delete. -->
-      <section id="history-panel" class="qr-subpanel">
-        <h3>History</h3>
-        <ol id="audit-timeline" class="audit-timeline"></ol>
-      </section>
+      <!-- Analytics + History live in the #qr-stats sidebar (right
+           side of the page), not here, so the main panel stays
+           focused on Create / Edit / Delete. JS flips #qr-stats
+           visibility off the same currentToken that drives this
+           panel; both panels appear and disappear together. -->
 
       <footer class="result-footer">
         <!-- Two delete affordances on purpose:

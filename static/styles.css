@@ -376,6 +376,43 @@ button.tertiary:hover {
   .my-qrs { position: static; width: auto; margin: 1rem; }
 }
 
+/* Right-side Stats sidebar — symmetric with .my-qrs (left) so the
+ * main panel stays centered between them. Holds Analytics + History,
+ * which were previously stacked below the result panel and made the
+ * main column scroll forever. */
+.qr-stats {
+  position: fixed;
+  top: 5rem;
+  right: 1rem;
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  max-height: calc(100vh - 7rem);
+  overflow-y: auto;
+}
+
+.qr-stats .qr-subpanel {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.qr-stats .qr-subpanel + .qr-subpanel {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 1280px) {
+  /* Not enough room for both sidebars + 560px main + breathing space.
+   * Collapse the right sidebar into the document flow underneath
+   * everything else; the layout already does the same for .my-qrs
+   * at < 900px. */
+  .qr-stats { position: static; width: auto; margin: 1rem; max-height: none; }
+}
+
 /* Modal */
 .modal {
   position: fixed;
@@ -821,25 +858,37 @@ button.tertiary:hover {
 /* ---------- Result-panel additions (download + analytics range) --- */
 
 .qr-actions {
-  margin: -0.5rem 0 1rem;
+  margin: -0.5rem 0 1.25rem;
   text-align: center;
 }
 
+/* Anchor styled as a real button — same visual weight as the Copy
+ * buttons in the result fields so it reads as an action, not a hint.
+ * Using <a> (not <button>) lets the browser's `download` attribute
+ * trigger the save flow natively without any JS click handler. */
 .qr-action-link {
-  display: inline-block;
-  padding: 0.3rem 0.75rem;
-  font-size: 0.78rem;
-  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  background: var(--border);
+  color: var(--text);
   text-decoration: none;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
 .qr-action-link:hover {
-  color: var(--text);
-  border-color: var(--text-dim);
-  background: rgba(255, 255, 255, 0.04);
+  background: #364555;
+}
+
+.qr-action-link:active {
+  transform: translateY(1px);
 }
 
 #current-redirect-status[value^="301"] {

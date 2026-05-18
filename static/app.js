@@ -294,6 +294,7 @@ function renderResult(data) {
   // expose it. The API still returns it for programmatic clients.
   createForm.hidden = true;
   resultPanel.hidden = false;
+  $("qr-stats").hidden = false;
   hideEditFeedback();
   _resetAnalyticsRange();
   // Kick off the secondary fetches (analytics + audit). Fresh QR
@@ -566,6 +567,7 @@ async function refreshAuthState() {
       authAnon.hidden = false;
       authSignedIn.hidden = true;
       $("my-qrs").hidden = true;
+      $("qr-stats").hidden = true;
       // API now requires auth to create — show the prompt instead of
       // a Create form that would 401 the moment a user clicked it.
       $("create-form").hidden = true;
@@ -809,6 +811,7 @@ function openOwnedQR(item) {
   currentToken = item.token;
   $("create-form").hidden = true;
   $("result").hidden = false;
+  $("qr-stats").hidden = false;
   hideEditFeedback();
   _resetAnalyticsRange();
   refreshAnalytics(item.token);
@@ -888,6 +891,7 @@ $("logout-btn").addEventListener("click", async () => {
 
 function resetCreateView() {
   resultPanel.hidden = true;
+  $("qr-stats").hidden = true;
   // Reveal the create form. This is the right state for "Start over"
   // (caller is definitely signed in -- result panel implies it). For
   // logout the caller chains refreshAuthState() after this, which
