@@ -229,6 +229,35 @@ def create_qr(
     )
 
 
+# Bounded cache for promoted (301) redirects. Without this header
+# Chrome treats 301 as cacheable indefinitely (RFC default), so a
+# destination change after promotion never reaches already-cached
+# clients — they'd be stuck on the old destination until they
+# manually cleared cache. 300 s matches what production short-URL
+# services do (t.co uses ~10 s; Cloudflare/Stripe use ~3600 s);
+# 5 min is the middle that still saves repeat-scan round-trips
+# while capping the blast radius of a destination change at one
+# coffee break. Captured in DECISIONS.md "301 cache trade-off".
+_PROMOTED_301_CACHE_HEADER = "public, max-age=300, must-revalidate"
+# 302 must NOT be cached — every scan is supposed to hit us so
+# Update / Delete propagate instantly and we can record analytics.
+# Modern browsers won't cache a 302 by default but proxies and
+# corporate caches might, so be explicit.
+_TEMPORARY_302_CACHE_HEADER = "no-store"
+
+
+def _redirect_with_cache_header(url: str, status: int) -> RedirectResponse:
+    """Build a 301/302 RedirectResponse with the right Cache-Control
+    so a future Update / Delete actually propagates within a bounded
+    window. See `_PROMOTED_301_CACHE_HEADER` for the rationale."""
+    header = (
+        _PROMOTED_301_CACHE_HEADER if status == 301 else _TEMPORARY_302_CACHE_HEADER
+    )
+    return RedirectResponse(
+        url=url, status_code=status, headers={"Cache-Control": header}
+    )
+
+
 @router.get("/r/{token}")
 @limiter.limit(_redirect_rate_limit)
 def redirect(token: str, request: Request, db: Session = Depends(get_db)):
@@ -239,6 +268,11 @@ def redirect(token: str, request: Request, db: Session = Depends(get_db)):
     from memory. On a cache hit past TTL we evict the entry and fall
     through to the DB path, which produces the 410 response with the
     canonical "expired" detail.
+
+    Every response carries an explicit `Cache-Control` (see
+    `_redirect_with_cache_header`) — without it Chrome will cache
+    a 301 indefinitely and a later destination change would never
+    reach already-cached clients.
     """
     now = _now_naive()
 
@@ -248,7 +282,7 @@ def redirect(token: str, request: Request, db: Session = Depends(get_db)):
         url, exp, status = cached
         if exp is None or exp > now:
             _record_scan(token, request, db)
-            return RedirectResponse(url=url, status_code=status)
+            return _redirect_with_cache_header(url, status)
         # Cached entry has expired — evict and let the DB path handle 410.
         redirect_cache.pop(token, None)
 
@@ -268,7 +302,7 @@ def redirect(token: str, request: Request, db: Session = Depends(get_db)):
     redirect_cache[token] = (mapping.original_url, mapping.expires_at, mapping.redirect_status)
 
     _record_scan(token, request, db)
-    return RedirectResponse(url=mapping.original_url, status_code=mapping.redirect_status)
+    return _redirect_with_cache_header(mapping.original_url, mapping.redirect_status)
 
 
 @router.get("/api/qr/mine", response_model=MyQRsResponse)

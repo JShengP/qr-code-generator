@@ -63,6 +63,31 @@ def test_promote_invalidates_cache_so_next_scan_picks_up_301(client):
     assert after.status_code == 301
 
 
+def test_302_redirect_carries_no_store_cache_control(client):
+    """302 must not be cached by intermediaries — every scan needs to
+    hit us so Update / Delete propagate and analytics record."""
+    data = _create(client, "https://example.com")
+    r = client.get(f"/r/{data['token']}", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers.get("cache-control", "").startswith("no-store")
+
+
+def test_301_redirect_carries_bounded_cache_control(client):
+    """301 must cap browser caching at 5 minutes (max-age=300) so a
+    future destination change still propagates within a coffee break.
+    The catastrophic alternative (default 301 = forever-cache) means
+    a single mistake locks the QR's destination on every browser
+    that ever scanned it."""
+    data = _create(client, "https://example.com")
+    client.patch(f"/api/qr/{data['token']}", json={"redirect_status": 301})
+
+    r = client.get(f"/r/{data['token']}", follow_redirects=False)
+    assert r.status_code == 301
+    cache_control = r.headers.get("cache-control", "")
+    assert "max-age=300" in cache_control
+    assert "must-revalidate" in cache_control
+
+
 def test_promote_to_302_rejected_at_schema_layer(client):
     data = _create(client)
     r = client.patch(f"/api/qr/{data['token']}", json={"redirect_status": 302})

@@ -329,9 +329,12 @@
           </summary>
           <p class="hint">
             302 re-checks every scan (default). 301 tells browsers to
-            cache the redirect permanently — fewer round-trips, but
-            subsequent destination changes may never reach a client
-            that already cached the 301. <strong>ONE-WAY operation.</strong>
+            cache the redirect — fewer round-trips and SEO equity
+            transfers, but destination changes take up to <strong>5
+            minutes</strong> to propagate to already-cached clients
+            (we send <code>Cache-Control: max-age=300</code>).
+            <strong>ONE-WAY operation</strong> — the API rejects
+            demoting back to 302.
           </p>
           <div class="row">
             <input id="current-redirect-status" readonly />

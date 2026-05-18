@@ -488,6 +488,20 @@ The sidebar re-fetches on every search keystroke (debounced 200 ms). Per-checkbo
 
 `POST /api/qr/{token}/restore` on a row that's not deleted returns 409 instead of silently succeeding. An idempotent 200 here would mask UI bugs (Restore button rendering against the wrong state), and the UI never legitimately calls this on a live row. Same pattern as the second-promote-to-301 case.
 
+### 301 cache trade-off: `max-age=300`, not RFC default
+
+Discovered during real-browser testing: promote a QR to 301, change destination, observe Chrome serving the old destination from disk cache forever. Root cause: `RedirectResponse` didn't set `Cache-Control`, so browsers fall back to the RFC default for 301 ("cacheable indefinitely"). Result: a one-click "Promote to 301" misclick locked the destination on every browser that had ever scanned the QR, even after the owner had clearly fixed the destination server-side.
+
+Fix: every redirect response now carries explicit `Cache-Control`:
+- **301**: `public, max-age=300, must-revalidate` — browsers cache for 5 min, then revalidate against us. Bounds the blast radius of any destination change to one coffee break.
+- **302**: `no-store` — explicit because corporate / proxy caches sometimes cache 302 even though modern browsers don't.
+
+300 s matches what production short-URL services do (t.co uses ~10 s; Cloudflare/Stripe sit around 3600 s). 5 min is the middle that still saves repeat-scan round-trips while keeping "I made a mistake" recoverable.
+
+The product trade is honest: 301 is no longer "permanent" in the RFC sense — it's "permanent-with-five-minute-grace". For 99% of legitimate use cases (SEO link equity, repeat-scanner bandwidth savings) the 5-minute cache is enough. For the 1% who genuinely want forever-cache, the answer is "you should not be using this service for that" — and the prototype isn't the place to introduce a multi-tier cache TTL setting.
+
+The confirm dialog and the `<details>` hint both now state the propagation window explicitly so the user knows what they're committing to before they click.
+
 ### Analytics date-range validates `from <= to` at the route
 
 Pydantic `Query(pattern=r"^\d{4}-\d{2}-\d{2}$")` catches garbage at the schema layer. The `from > to` check is a route-level 422 because the pattern is per-field. Otherwise a `?from=2026-12-01&to=2025-01-01` would silently return an empty chart and the user would think it's a "no scans in range" result rather than user error.

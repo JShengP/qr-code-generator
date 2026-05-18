@@ -201,11 +201,17 @@ $("promote-301-btn").addEventListener("click", async () => {
   if (!currentToken || currentRedirectStatus === 301) return;
   const ok = confirm(
     "Promote to a permanent 301 redirect?\n\n" +
-    "Browsers and HTTP clients cache 301s aggressively (often forever). " +
-    "After this:\n" +
-    "  • Subsequent destination changes may not reach already-cached clients.\n" +
-    "  • Analytics will under-count: cached clients skip our server entirely.\n" +
-    "  • This is a ONE-WAY operation. You cannot demote back to 302.\n\n" +
+    "After promotion:\n" +
+    "  • Browsers cache the redirect for up to 5 minutes\n" +
+    "    (we send Cache-Control: max-age=300).\n" +
+    "  • Destination changes will take up to 5 minutes to propagate\n" +
+    "    to scanners whose browser is still caching the old value.\n" +
+    "  • Analytics will under-count by the same window: cached scans\n" +
+    "    skip our server entirely.\n" +
+    "  • This is a ONE-WAY operation. The API rejects demoting back\n" +
+    "    to 302 — the right move if you regret it is to delete this\n" +
+    "    QR and create a fresh one.\n\n" +
+    "Only promote QRs whose destination really won't change.\n\n" +
     "Continue?"
   );
   if (!ok) return;
