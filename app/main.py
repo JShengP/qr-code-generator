@@ -58,6 +58,29 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+
+# In dev, browsers cache /app.js and /styles.css aggressively for
+# localhost — meaning a code change can leave you staring at an old
+# version with no obvious reason why. Force revalidation on every
+# request so the cached copy is at most one mtime check stale.
+#
+# Gated on IS_PRODUCTION: in prod the right answer is long-cache +
+# versioned filenames / query strings, which we don't ship yet.
+# Until then, prod skips this middleware entirely so CDNs and
+# browser caches can do their job normally.
+if not IS_PRODUCTION:
+    _NO_CACHE_SUFFIXES = (".js", ".css", ".html")
+
+    @app.middleware("http")
+    async def _no_cache_static_in_dev(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith(_NO_CACHE_SUFFIXES):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
 # Order matters: API routes must register BEFORE the static catch-all so
 # that POST /api/qr/create, GET /r/{token}, etc. take precedence over the
 # StaticFiles mount at "/". The mount serves index.html on "/" via
