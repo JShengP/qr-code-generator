@@ -105,11 +105,18 @@ The nonce source was the moment I stopped thinking about randomness purely as "i
 - Analytics aren't a product requirement.
 - You want SEO link-equity transferred from the short URL to the canonical destination — 301 transfers it, 302 doesn't.
 
-A hybrid that's seen in production: serve 302 by default, but offer "promote to 301" as a one-time finalization. Our current API doesn't model this, but it would be a single boolean column on `url_mappings` and a branch in `redirect()`.
+A hybrid that's seen in production: serve 302 by default, but offer "promote to 301" as a one-time finalization. We ship exactly this — `redirect_status` int column on `url_mappings` (default 302), a UI gate behind a collapsed `<details>` so the dangerous button can't be misclicked, an API that accepts `PATCH {redirect_status: 301}` once and rejects subsequent demotions. The promote response carries `Cache-Control: public, max-age=300, must-revalidate` so the worst-case blast radius of a destination change after promotion is 5 minutes, not "forever, on every browser that ever scanned it" (see Your take below for why we know that matters).
 
 **Your take:**
 
 What locked 302 in for me wasn't the analytics argument — it was the audit-log promise. We tell users "every PATCH / DELETE / rotate lands in the timeline, so you can always see what happened to this QR." That promise is hollow under 301: the cached redirect in the user's browser doesn't know about our timeline, and a change that we logged today might not be visible to a scanner for months. 302 is what makes the audit log an *honest* record of system state instead of an aspirational one. The CDN-cost trade-off is real but cheap by comparison.
+
+**Lived experience that confirmed all of the above:** While testing the freshly-built Promote-to-301 feature, I clicked the button on a QR pointing at `geo:25.0339,121.5644`, then changed the destination to a Google Maps URL — and Chrome kept showing me the dead `geo:` link no matter how many times I reloaded. The Network tab eventually revealed the truth: status `301 Moved Permanently (from disk cache)`. The OLD 301 response had been written to disk cache *before* I shipped a `Cache-Control` ceiling, so Chrome was treating it as RFC-default "permanent" and never re-asking the server. The only escape was Empty Cache and Hard Reload — server-side I was helpless to reach into the client and fix it. This led to two follow-up changes that are now in the design:
+
+1. **`Cache-Control: max-age=300, must-revalidate`** on every 301 response, so the worst-case window for a destination change to propagate to already-cached clients is 5 minutes instead of "until the user manually clears their cache (which they never will)." Captures the spirit of t.co (~10 s) and Stripe / Cloudflare (~3600 s) — 300 s is the middle that still saves the repeat-scan round-trip while bounding the recovery time.
+2. **API rejects `PATCH {redirect_status: 302}`** — "demotion would feel like undo but isn't" is exactly the kind of dishonest signal we'd rather refuse than fake. Same philosophy as the audit-log honesty argument above.
+
+The bigger lesson — and the one I'm keeping past this project — is that **server-side fixes can never reach into already-distributed cache state**. The moment a `Cache-Control: max-age=N` ships, every previously-cached response with the old (forever) headers is stuck until each individual client clears it. Designing for distributed state means accepting that *every* publish is partially-irreversible the moment it happens; bounding the recovery window matters more than pretending you can prevent the mistake.
 
 ---
 
