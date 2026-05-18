@@ -14,6 +14,11 @@ env/
 *.db
 *.db-journal
 
+# Secrets — loaded by python-dotenv at startup. Never commit.
+.env
+.env.local
+.env.*.local
+
 # IDE
 .vscode/
 .idea/

@@ -25,6 +25,28 @@ The conventional set of overrides:
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+# Auto-load `.env` from the project root (sibling of `app/`) before any
+# os.getenv() calls below see their defaults. Means a dev doesn't have
+# to re-export `$env:GITHUB_CLIENT_ID = ...` etc every time they open
+# a new PowerShell session — just keep the secrets in `.env` (which
+# .gitignore covers) and they get picked up automatically.
+#
+# We pass an explicit path rather than relying on `find_dotenv()` so
+# `pytest` run from any cwd resolves to the same file. `override=False`
+# (the default) means real env vars still win, so CI / production with
+# explicit `BASE_URL=...` etc isn't shadowed by a stray local .env.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    # python-dotenv is a soft dependency: in environments where the
+    # user truly only relies on real env vars (Docker, CI), skipping
+    # the load is fine. requirements.txt does pin it, so this branch
+    # is only hit if someone runs from a stripped-down image.
+    pass
 
 # --- Deployment / environment ------------------------------------------
 DEPLOY_ENV: str = os.getenv("DEPLOY_ENV", "").lower()
