@@ -1,0 +1,42 @@
+# Keep the build context small and the image free of dev-only files.
+# Each match below is the conventional "would never belong in a
+# production container image" set.
+
+# Python build / runtime junk
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Local venvs — image installs its own deps via pip.
+.venv/
+venv/
+env/
+
+# Local SQLite — DB on Render is either ephemeral (recreated on
+# startup via Base.metadata.create_all) or external (Postgres URL).
+# Either way, baking the dev DB into the image would be a leak.
+*.db
+*.db-journal
+
+# Secrets — anyone who pulls / inspects the image image must not see
+# these. Render injects env vars at runtime via the dashboard.
+.env
+.env.local
+.env.*.local
+
+# Tests are run in CI / pre-commit, not in production runtime.
+tests/
+
+# Misc dev / IDE files.
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.md
+!README.md
+.DS_Store
+Thumbs.db
+*.log

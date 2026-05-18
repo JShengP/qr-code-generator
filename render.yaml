@@ -1,0 +1,71 @@
+# Render Blueprint — describes how to deploy this service.
+# Render reads this file when you import the repo as a Blueprint
+# (dashboard → "New +" → "Blueprint" → paste the GitHub URL).
+#
+# Free tier caveats baked in here:
+#   - `plan: free` → 512 MB RAM, shared CPU, sleeps after 15 min
+#     of inactivity. First request after a sleep cold-starts the
+#     container (~30 s). Acceptable for portfolio / demo; not for
+#     anything user-facing under steady load.
+#   - Disk is ephemeral on the free plan, so SQLite resets on every
+#     deploy / restart. Fine for demoing the UI; persist data by
+#     switching DATABASE_URL to a Neon / Supabase free Postgres
+#     instance once you outgrow that.
+#
+# Secrets (`sync: false`) are deliberately NOT in this file — they
+# get prompted in the Render dashboard the first time you sync the
+# Blueprint, then stored encrypted at rest by Render.
+
+services:
+  - type: web
+    name: qr-code-generator
+    runtime: docker
+    plan: free
+    region: singapore   # closest to Taiwan / HK / SEA users
+    branch: main
+    # The healthcheck endpoint must return 200 quickly. /api/auth/me
+    # always 200s (`{"user": null}` when not signed in), no DB write,
+    # no auth required — perfect liveness probe.
+    healthCheckPath: /api/auth/me
+
+    envVars:
+      # Switches off /docs, /redoc, /openapi.json, also enables
+      # Secure cookies + disables the dev-only no-cache middleware.
+      - key: DEPLOY_ENV
+        value: production
+
+      # MUST be set explicitly post-deploy: copy the public URL
+      # Render assigns ("https://qr-code-generator-xxxx.onrender.com")
+      # into the dashboard. Until you do, short URLs in the UI fall
+      # back to localhost:8000 and 404 for visitors.
+      - key: BASE_URL
+        sync: false
+
+      # SQLite in the container filesystem — ephemeral on free plan.
+      # For persistence: provision a Neon Postgres free DB and set
+      #   DATABASE_URL=postgresql+psycopg://user:pass@ep-xxx.neon.tech/db
+      # (and add psycopg[binary] to requirements.txt).
+      - key: DATABASE_URL
+        value: sqlite:///./qr_code.db
+
+      # --- GitHub OAuth ---
+      # Register a new OAuth app at github.com/settings/developers
+      # with the production callback:
+      #   https://<your-render-url>/api/auth/github/callback
+      # Then paste the client id + secret in the Render dashboard.
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+
+      # --- Email (Resend) ---
+      # Sign up at resend.com (free tier: 3000 emails/month, 100/day).
+      # For testing without verifying a domain, use the test sender
+      # `onboarding@resend.dev` — replace once you verify a domain
+      # so emails don't go to spam.
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: onboarding@resend.dev

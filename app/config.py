@@ -98,9 +98,15 @@ MAGIC_LINK_TTL_MINUTES: int = int(os.getenv("MAGIC_LINK_TTL_MINUTES", "15"))
 AUTH_REQUEST_RATE_LIMIT: str = os.getenv("AUTH_REQUEST_RATE_LIMIT", "3/minute")
 
 # Email provider selection. Empty value => ConsoleEmailService (dev
-# mode, prints link to stdout). Future: "resend" / "smtp" / etc.
+# mode, prints link to stdout). "resend" routes through Resend's
+# transactional API (free tier: 3000/month, 100/day) — see
+# ResendEmailService in app/email_service.py.
 EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "").lower()
 EMAIL_FROM: str = os.getenv("EMAIL_FROM", "noreply@localhost")
+# API key for the chosen provider. Only read when EMAIL_PROVIDER
+# requires it. Kept out of the codebase — set via .env (gitignored)
+# or the platform's secret manager.
+RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
 
 # --- OAuth providers ---------------------------------------------------
 # GitHub OAuth app credentials. The app registration lives at

@@ -65,9 +65,9 @@ All configuration is centralized in [`app/config.py`](app/config.py) and reads `
 
 | Env var | Default | What it does |
 |---|---|---|
-| `DEPLOY_ENV` | `dev` | `production` hides `/docs`, `/redoc`, `/openapi.json`. |
+| `DEPLOY_ENV` | `dev` | `production` hides `/docs`, disables the dev no-cache middleware + dev `BASE_URL` auto-derive, and enables `Secure` session cookies. |
 | `DATABASE_URL` | `sqlite:///./qr_code.db` | SQLAlchemy URL. Postgres / MySQL also work. |
-| `BASE_URL` | `http://localhost:8000` | Public URL encoded into the QR + returned in `short_url`. |
+| `BASE_URL` | _(see notes)_ | Public URL encoded into the QR + returned in `short_url`. **Dev**: leave blank — auto-derives from `request.base_url` so the URL always matches your actual port. **Prod**: set explicitly (e.g. `https://qr.example.com`) so QRs encode the public domain, not the internal proxy address. |
 | `CREATE_RATE_LIMIT` | `10/minute` | slowapi expression for `POST /api/qr/create`. |
 | `REDIRECT_RATE_LIMIT` | `300/minute` | slowapi expression for `GET /r/{token}`. |
 | `MUTATION_RATE_LIMIT` | `30/minute` | slowapi expression for `PATCH`/`DELETE`. |
@@ -79,12 +79,13 @@ All configuration is centralized in [`app/config.py`](app/config.py) and reads `
 | `SESSION_TTL_DAYS` | `30` | How long a session row stays valid. |
 | `MAGIC_LINK_TTL_MINUTES` | `15` | How long a magic link stays redeemable. |
 | `AUTH_REQUEST_RATE_LIMIT` | `3/minute` | Per-IP cap on `POST /api/auth/request-link`. |
-| `EMAIL_PROVIDER` | `(empty)` | `console` (default, prints magic link to stdout) or future `resend` / `smtp`. |
-| `EMAIL_FROM` | `noreply@localhost` | Sender address for production email. |
+| `EMAIL_PROVIDER` | `(empty)` | `console` / `(empty)` prints the magic link to stdout (dev). `resend` routes through Resend's HTTP API (requires `RESEND_API_KEY`). |
+| `EMAIL_FROM` | `noreply@localhost` | Sender address. For Resend without a verified domain, use `onboarding@resend.dev`. |
+| `RESEND_API_KEY` | `(empty)` | Only required when `EMAIL_PROVIDER=resend`. Sign up at <https://resend.com> (free: 3000/month). |
 | `GITHUB_CLIENT_ID` | `(empty)` | Set to enable GitHub OAuth. Register at <https://github.com/settings/developers>. |
 | `GITHUB_CLIENT_SECRET` | `(empty)` | Paired with `GITHUB_CLIENT_ID`. |
 
-A blank `.env.example` is checked in at the repo root listing every var name; copy to `.env`, fill values, and your shell can `source` it (or use a tool like `direnv`).
+The app loads `.env` from the project root automatically at startup via `python-dotenv` — copy `.env.example` to `.env`, fill in values, restart uvicorn. Real env vars (e.g. those set by Render / Docker) still take precedence so a deployed instance isn't shadowed by a stray local `.env`.
 
 ## Architecture
 
@@ -144,16 +145,23 @@ qr-code-generator/
 │   ├── auth.py            get_current_user dependency
 │   ├── auth_routes.py     /api/auth/* magic-link endpoints
 │   ├── oauth_github.py    /api/auth/github/* OAuth flow
-│   └── email_service.py   pluggable EmailService (Console / future Resend)
+│   ├── email_service.py   pluggable EmailService (Console / Resend HTTP API)
+│   ├── url_helpers.py     base_url() — auto-derives in dev, explicit in prod
+│   └── ...
 ├── static/                vanilla-JS UI served at / (login, My QRs, edit)
-├── tests/                 91 pytest cases (test_api / test_auth / test_audit)
+├── tests/                 ~150 pytest cases (api / auth / audit / features / email)
+├── tests/e2e/             Playwright end-to-end against a real uvicorn subprocess
 ├── scripts/smoke.ps1      end-to-end PowerShell script (needs session cookie)
 ├── .github/workflows/     CI runs pytest on push/PR
+├── Dockerfile             single-stage Python 3.12-slim, $PORT-aware CMD
+├── render.yaml            Render Blueprint: free-tier Web Service config
+├── .dockerignore          keeps tests, .venv, .git, .env out of the image
 ├── DECISIONS.md           code-level deviations from answers/ with reasoning
 ├── ANSWERS.md             5 PROMPT.md design-question write-ups
-├── .env.example           every env var documented with blank value
+├── docs/API.md            programmatic-access guide (bearer token, curl, FAQ)
+├── .env.example           every env var documented; copy to .env (auto-loaded)
 ├── requirements.txt       runtime deps
-└── requirements-dev.txt   adds pytest + httpx
+└── requirements-dev.txt   adds pytest + httpx + playwright
 ```
 
 ## Setup
@@ -215,6 +223,45 @@ $env:QRS_SESSION_COOKIE = '<paste the cookie value>'
 
 Hits the running server with 12 scenarios (PROMPT.md basics + tz-aware expiry + edit_token rotation + anonymous-create-rejected) and prints PASS/FAIL per assertion. Exits non-zero on any failure so it can gate a release.
 
+## Deploy
+
+A `Dockerfile` + `render.yaml` Blueprint are checked in. Free-tier Render gets you a public `https://...onrender.com` URL with no credit card.
+
+### One-time setup (per environment)
+
+1. **Push to GitHub.** Render reads `render.yaml` from the repo.
+2. **Register a production GitHub OAuth app** at <https://github.com/settings/developers>:
+   - Authorization callback URL: `https://your-render-url.onrender.com/api/auth/github/callback`
+   - Keep the dev callback (`http://127.0.0.1:8001/api/auth/github/callback`) too — GitHub allows multiple since 2021.
+   - Save the **Client ID** + a **fresh Client Secret**.
+3. **Sign up at <https://resend.com>** (free: 3000 emails/month). Create an API key. For the initial deploy use `onboarding@resend.dev` as the `From` — verify a real domain once you have one.
+
+### Deploy via Render Blueprint
+
+1. Render dashboard → **New +** → **Blueprint** → paste your GitHub repo URL.
+2. Render detects `render.yaml` and prompts for the `sync: false` secrets:
+   - `BASE_URL` — **leave blank for now** (first deploy doesn't know its own URL yet).
+   - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` — from step 2 above.
+   - `RESEND_API_KEY` — from step 3 above.
+3. Click **Apply** → Render builds the Docker image and deploys (~3 min).
+4. Copy the public URL Render assigns: `https://qr-code-generator-xxxx.onrender.com`.
+5. **Set `BASE_URL`** in the dashboard to that URL → Render auto-redeploys.
+6. Update the GitHub OAuth app's callback URL to use your actual Render URL.
+
+### Free-tier caveats
+
+- **Sleeps after 15 min** of inactivity. First request after a sleep cold-starts (~30 s). Acceptable for portfolio / demo.
+- **SQLite resets on every deploy / restart** — Render free disk is ephemeral. For persistence, switch `DATABASE_URL` to a free Postgres host (Neon offers a permanent free tier: `postgresql+psycopg://user:pass@ep-xxx.neon.tech/db`) and add `psycopg[binary]` to `requirements.txt`.
+- **512 MB RAM, shared CPU** — fine for the prototype's load, not for anything user-facing under steady traffic.
+
+### Local Docker build (smoke test before deploy)
+
+```bash
+docker build -t qr-code-generator .
+docker run -p 8000:8000 -e DEPLOY_ENV=dev qr-code-generator
+# UI at http://localhost:8000/
+```
+
 ## Roadmap
 
 PROMPT.md core (Stages 1–8):
@@ -248,3 +295,20 @@ User identity layer:
 - [x] GitHub OAuth as second sign-in path (`oauth_github.py`)
 - [x] `POST /api/qr/create` now requires authentication
 - [x] `audit_logs` table — every create/patch/delete/rotate recorded
+
+Stretch features:
+
+- [x] 302 → 301 promote flag with `Cache-Control: max-age=300` cap
+- [x] PNG download button (Content-Disposition attachment)
+- [x] Sidebar search / sort / "Show deleted" toggle
+- [x] Analytics date-range filter (`?from=&to=`)
+- [x] Soft-delete restore (per-row ↻ + dedicated endpoint)
+- [x] Bulk delete (per-row checkboxes + all-or-nothing endpoint)
+- [x] Dev: BASE_URL auto-derives from request, no-cache for `/app.js`/`/styles.css`
+- [x] Playwright e2e suite covering the stretch flows
+
+Production-ready packaging:
+
+- [x] `Dockerfile` + `render.yaml` Blueprint for one-click Render deploy
+- [x] Resend HTTP-API email backend (`EMAIL_PROVIDER=resend`)
+- [x] `python-dotenv` autoload of project-root `.env`
