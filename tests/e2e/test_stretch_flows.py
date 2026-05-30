@@ -361,3 +361,157 @@ def test_bulk_clear_button_drains_selection(signed_in_page):
     )
     # Row is still alive (we only cleared the selection, not deleted).
     assert page.locator("#my-qrs-list li").count() == 1
+
+
+# ---------------------------------------------------------------------
+# QR appearance customizer (color / resolution / quiet-zone / ECC)
+# ---------------------------------------------------------------------
+
+
+def _set_input(page, selector: str, value: str) -> None:
+    """Set an <input type=color/range> value and fire the `input` event
+    the live-preview handler listens for. Playwright's .fill() doesn't
+    drive color/range inputs, so set value + dispatch the event directly."""
+    page.locator(selector).evaluate(
+        "(el, v) => { el.value = v; "
+        "el.dispatchEvent(new Event('input', {bubbles: true})); }",
+        value,
+    )
+
+
+def test_qr_styling_rewrites_preview_and_download_urls(signed_in_page):
+    """Changing a style control rewrites BOTH the preview <img> src and
+    the Download link href with the matching query param, and the styled
+    PNG actually loads from the server (naturalWidth > 0)."""
+    page, _ = signed_in_page
+    _create_qr(page, "https://example.com")
+
+    # Default render: bare /image path, no style params yet.
+    page.wait_for_function(
+        "() => { const s = document.querySelector('#qr-image').getAttribute('src');"
+        " return s && s.includes('/image') && !s.includes('fill='); }"
+    )
+    # The customizer is open by default — the feature should be discoverable.
+    assert page.locator(".qr-style").get_attribute("open") is not None
+
+    # Foreground color -> src + download href both gain fill=%23ff0000.
+    _set_input(page, "#qr-fill", "#ff0000")
+    page.wait_for_function(
+        "() => document.querySelector('#qr-image')"
+        ".getAttribute('src').includes('fill=%23ff0000')"
+    )
+    dl = page.locator("#qr-download-link").get_attribute("href")
+    assert "fill=%23ff0000" in dl
+    assert "download=1" in dl
+
+    # The styled image must actually decode — proves the server served a
+    # valid PNG for the styled URL, not a 422/500.
+    page.wait_for_function(
+        "() => { const i = document.querySelector('#qr-image');"
+        " return i.complete && i.naturalWidth > 0; }"
+    )
+
+    # Resolution slider -> readout + scale= param update together.
+    _set_input(page, "#qr-scale", "20")
+    page.wait_for_function(
+        "() => document.querySelector('#qr-image')"
+        ".getAttribute('src').includes('scale=20')"
+    )
+    assert page.locator("#qr-scale-value").text_content().strip() == "20"
+
+    # Reset clears every style param back to the bare /image URL.
+    page.locator("#qr-style-reset").click()
+    page.wait_for_function(
+        "() => { const s = document.querySelector('#qr-image').getAttribute('src');"
+        " return !s.includes('fill=') && !s.includes('scale='); }"
+    )
+    assert page.locator("#qr-fill").input_value() == "#000000"
+
+
+def test_qr_styling_does_not_leak_between_qrs(signed_in_page):
+    """Opening / creating another QR resets the controls so a previously
+    chosen palette doesn't silently carry over to a different code."""
+    page, _ = signed_in_page
+    _create_qr(page, "https://first.example")
+
+    _set_input(page, "#qr-fill", "#00ff00")
+    page.wait_for_function(
+        "() => document.querySelector('#qr-image')"
+        ".getAttribute('src').includes('fill=%2300ff00')"
+    )
+
+    # Start over and create a second QR — controls must be back to default.
+    page.locator("#reset").click()
+    page.locator("#create-form").wait_for(state="visible")
+    _create_qr(page, "https://second.example")
+
+    assert page.locator("#qr-fill").input_value() == "#000000"
+    page.wait_for_function(
+        "() => !document.querySelector('#qr-image')"
+        ".getAttribute('src').includes('fill=')"
+    )
+
+
+def test_qr_module_shape_and_gradient_render(signed_in_page):
+    """Module-shape + gradient selects rewrite the GET image URL and the
+    styled QR still decodes; the gradient-end color row reveals on demand."""
+    page, _ = signed_in_page
+    _create_qr(page, "https://shapes.example")
+
+    # Gradient-end row is hidden until a gradient is chosen.
+    assert not page.locator("#qr-fill2-row").is_visible()
+
+    page.locator("#qr-module").select_option("rounded")
+    page.wait_for_function(
+        "() => document.querySelector('#qr-image')"
+        ".getAttribute('src').includes('module=rounded')"
+    )
+
+    page.locator("#qr-gradient").select_option("radial")
+    page.wait_for_function(
+        "() => { const s = document.querySelector('#qr-image').getAttribute('src');"
+        " return s.includes('gradient=radial') && s.includes('fill2='); }"
+    )
+    assert page.locator("#qr-fill2-row").is_visible()
+
+    # Styled QR actually decodes, and the download link mirrors the style.
+    page.wait_for_function(
+        "() => { const i = document.querySelector('#qr-image');"
+        " return i.complete && i.naturalWidth > 0; }"
+    )
+    dl = page.locator("#qr-download-link").get_attribute("href")
+    assert "module=rounded" in dl
+    assert "gradient=radial" in dl
+
+
+def test_qr_logo_upload_previews_via_blob_then_clears(signed_in_page, tmp_path):
+    """Selecting a logo switches the preview to a POST-rendered blob: URL
+    that decodes; removing it returns to the cacheable GET preview."""
+    from PIL import Image
+
+    page, _ = signed_in_page
+    _create_qr(page, "https://logo.example")
+
+    logo = tmp_path / "logo.png"
+    Image.new("RGB", (80, 80), (255, 0, 0)).save(logo)
+    page.locator("#qr-logo").set_input_files(str(logo))
+
+    # Preview becomes a blob (POST render) and decodes.
+    page.wait_for_function(
+        "() => document.querySelector('#qr-image').getAttribute('src').startsWith('blob:')"
+    )
+    page.wait_for_function(
+        "() => { const i = document.querySelector('#qr-image');"
+        " return i.complete && i.naturalWidth > 0; }"
+    )
+    assert page.locator("#qr-download-link").get_attribute("href").startswith("blob:")
+    # Logo-size slider + remove button reveal once a logo is attached.
+    assert page.locator("#qr-logo-size-row").is_visible()
+    assert page.locator("#qr-logo-clear").is_visible()
+
+    # Remove the logo -> back to the GET (non-blob) preview.
+    page.locator("#qr-logo-clear").click()
+    page.wait_for_function(
+        "() => !document.querySelector('#qr-image').getAttribute('src').startsWith('blob:')"
+    )
+    assert not page.locator("#qr-logo-size-row").is_visible()

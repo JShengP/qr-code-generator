@@ -23,11 +23,56 @@ A dynamic QR code service: submit a URL, get back a short token + scannable PNG.
 | `GET` | `/api/qr/{token}` | none | Metadata (URL, timestamps, deletion/expiry state). |
 | `PATCH` | `/api/qr/{token}` | **session OR bearer** | Update target URL and/or expiration. Owner shortcut: a signed-in caller who owns the mapping skips the bearer. |
 | `DELETE` | `/api/qr/{token}` | **session OR bearer** | Soft delete; row stays in DB, subsequent redirects return 410. Recorded in `audit_logs`. |
-| `GET` | `/api/qr/{token}/image` | none | PNG of the QR code that encodes the short URL. |
+| `GET` | `/api/qr/{token}/image` | none | PNG of the QR. Optional style query params (see below): `fill`, `back`, `scale`, `border`, `ecc`, `module`, `gradient`, `fill2`. |
+| `POST` | `/api/qr/{token}/image` | none | Same render, multipart — adds an optional center `logo` file (binary, so it can't ride a GET query string). |
 | `GET` | `/api/qr/{token}/analytics` | none | Total scans + scans-by-day breakdown. |
 | `GET` | `/api/qr/{token}/audit` | **owner** | History of every mutation (create / patch / delete / rotate). Readable even after delete; non-owner gets 403. |
 | `POST` | `/api/qr/{token}/rotate-edit-token` | **session OR bearer** | Issue a fresh `edit_token`; old one is invalidated. |
 | `GET` | `/api/qr/mine` | session | List the signed-in user's QRs (anonymous returns empty). |
+
+#### Styling the QR image
+
+`GET /api/qr/{token}/image` takes optional query params to restyle the
+PNG. Styling is **stateless** — a pure function of the params, never
+stored on the mapping — so it never changes where the QR points, and
+the same token can be rendered in different palettes for different
+contexts. The web UI exposes all of these live under **🎨 Customize
+appearance** in the result panel.
+
+| Param | Default | Range / values | Effect |
+|---|---|---|---|
+| `fill` | `000000` | hex `rgb`/`rrggbb`, `#` optional (encode as `%23`) | Color of the dark modules (gradient start). |
+| `back` | `ffffff` | same as `fill` | Background / quiet-zone color. |
+| `scale` | `10` | `1`–`40` | Pixels per module — higher = larger, sharper PNG. |
+| `border` | `4` | `0`–`20` | Quiet-zone width in modules (spec recommends ≥ 4). |
+| `ecc` | `M` | `L` / `M` / `Q` / `H` | Error-correction level (~7 / 15 / 25 / 30 % recovery). |
+| `module` | `square` | `square` / `rounded` / `circle` / `gapped` | Module (dot) shape. |
+| `gradient` | `none` | `none` / `radial` / `square` / `horizontal` / `vertical` | Foreground gradient; sweeps `fill` → `fill2`. |
+| `fill2` | `5b9eff` | same as `fill` | Gradient end color (only used when `gradient` ≠ `none`). |
+
+```bash
+# Rounded navy→blue radial gradient, hi-res:
+curl "http://localhost:8000/api/qr/Xedis7d/image?module=rounded&gradient=radial&fill=%231a3b7c&fill2=%235b9eff&scale=16" -o qr.png
+```
+
+**Center logo** is the one knob that can't ride a query string (it's
+binary), so it uses the `POST` twin as `multipart/form-data` — same
+fields as `Form` parts, plus a `logo` file and an optional `logo_ratio`
+(`0.1`–`0.3`, default `0.22`). A logo occludes the center modules, so the
+server **forces `ecc=H`** whenever one is present. The render stays
+stateless: the logo is composited into that one response, never stored.
+
+```bash
+# Rounded gradient QR with a centered logo:
+curl -X POST "http://localhost:8000/api/qr/Xedis7d/image" \
+  -F "module=rounded" -F "gradient=radial" -F "fill=1a3b7c" -F "fill2=5b9eff" \
+  -F "logo=@logo.png" -o qr-with-logo.png
+```
+
+Bad input is rejected: `422` for malformed hex, out-of-range size,
+unknown `ecc` / `module` / `gradient`, a non-image logo, or `fill` ==
+`back` on a solid (non-gradient) fill — which would render an unscannable
+solid block; `413` for a logo over 2 MB.
 
 ### Auth
 

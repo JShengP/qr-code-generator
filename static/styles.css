@@ -1086,3 +1086,146 @@ button.tertiary:hover {
   margin: 0.75rem 0 0;
   color: var(--text-dim);
 }
+
+/* ---------- QR appearance customizer (result panel) --------------- */
+
+.qr-style {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.85rem;
+  margin: 0 0 1.25rem;
+}
+
+.qr-style > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text);
+  list-style: revert; /* keep the native disclosure triangle */
+}
+
+.qr-style > summary:hover { color: var(--accent); }
+
+.qr-style-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.qr-style-row {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+/* The leading label text is the brighter element; the parenthetical
+ * .hint inside it stays dim. */
+.qr-style-row > span:first-child { color: var(--text); }
+.qr-style-row .hint { font-weight: 400; }
+
+.qr-style-row input[type="color"] {
+  width: 100%;
+  height: 2rem;
+  padding: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  color-scheme: dark;
+}
+
+.qr-style-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.qr-style-row select {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-family: inherit;
+  color-scheme: dark;
+}
+
+.qr-style-readout {
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-align: right;
+  min-width: 1.75rem;
+}
+
+.qr-style-note {
+  margin: 0.75rem 0 0;
+  line-height: 1.45;
+  font-style: normal;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+/* The reset button is a .tertiary, but full-width inside this panel
+ * rather than the auto width it gets in the result footer. */
+.qr-style-reset {
+  margin-top: 0.6rem;
+  width: 100%;
+}
+
+/* Logo file input. File inputs barely theme, but we can style the
+ * picker button and let the field shrink inside the grid cell. */
+.qr-style-row input[type="file"].qr-logo-input {
+  width: 100%;
+  min-width: 0; /* allow shrink so a long filename doesn't blow out the row */
+  font-size: 0.72rem;
+  font-family: inherit;
+  color: var(--text-dim);
+}
+
+.qr-style-row input[type="file"].qr-logo-input::file-selector-button {
+  margin-right: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  background: var(--border);
+  color: var(--text);
+  border: none;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.qr-style-row input[type="file"].qr-logo-input::file-selector-button:hover {
+  background: #364555;
+}
+
+/* Small ✕ that clears the chosen logo (mirrors the sidebar row delete). */
+.qr-logo-clear {
+  padding: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  line-height: 1;
+  font-size: 0.8rem;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.qr-logo-clear:hover {
+  color: var(--error);
+  border-color: var(--error);
+  background: var(--error-bg);
+}
+
+.qr-style-error {
+  margin-top: 0.6rem;
+}

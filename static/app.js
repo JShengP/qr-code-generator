@@ -289,14 +289,16 @@ function _formatExpires(isoString) {
 }
 
 function renderResult(data) {
-  $("qr-image").src = data.qr_code_url;
   $("short-url").value = data.short_url;
   $("original-url").value = data.original_url;
   $("token").value = data.token;
   $("current-expires").value = _formatExpires(data.expires_at);
   _applyRedirectStatus(data.redirect_status ?? 302);
   _applyDeletedState(false);
-  _setDownloadLink(data.token);
+  // Fresh QR starts from the default look; _renderQrImage points both
+  // the preview and the download link at the (styled) image endpoint.
+  _resetQrStyleControls();
+  _renderQrImage(data.token);
   currentToken = data.token;
   // We intentionally ignore data.edit_token here — the UI doesn't
   // expose it. The API still returns it for programmatic clients.
@@ -352,11 +354,205 @@ function _applyDeletedState(isDeleted) {
   });
 }
 
-function _setDownloadLink(token) {
-  const link = $("qr-download-link");
-  link.href = `/api/qr/${token}/image?download=1`;
-  link.setAttribute("download", `qr-${token}.png`);
+// ---------------------------------------------------------------------
+// QR appearance: color, gradient, module shape, resolution, quiet-zone
+// border, error-correction, and an optional center logo.
+//
+// Two render paths, one entry point (`_renderQrImage`):
+//   - No logo  -> GET /api/qr/{token}/image?<params>. The <img src> and
+//     the Download link share the same URL; cacheable, simple.
+//   - Logo set -> POST the same endpoint as multipart (the logo is
+//     binary, can't ride a query string). The returned PNG is previewed
+//     as a blob: object URL, reused for the Download link.
+// Either way styling is presentational only — the encoded short URL
+// (destination) never changes.
+// ---------------------------------------------------------------------
+
+// Mirror the server's defaults. Anything still at its default is omitted
+// from the GET URL so an untouched QR requests the bare /image path.
+const _QR_STYLE_DEFAULTS = {
+  fill: "#000000",
+  back: "#ffffff",
+  fill2: "#5b9eff",
+  scale: "10",
+  border: "4",
+  ecc: "M",
+  module: "square",
+  gradient: "none",
+};
+
+// Tracks the current blob: URL (logo path) so we can revoke it when the
+// preview changes — otherwise each render leaks an object URL.
+let _qrObjectUrl = null;
+// Monotonic render id. Debounced drags can overlap POSTs; we apply only
+// the newest response and drop any that a later render has superseded.
+let _qrRenderSeq = 0;
+
+function _setQrImageSrc(url, isObjectUrl) {
+  if (_qrObjectUrl) {
+    URL.revokeObjectURL(_qrObjectUrl);
+    _qrObjectUrl = null;
+  }
+  if (isObjectUrl) _qrObjectUrl = url;
+  $("qr-image").src = url;
 }
+
+function _qrStyleParams() {
+  // URLSearchParams percent-encodes the '#' in colors to %23 for us.
+  const qs = new URLSearchParams();
+  const fill = $("qr-fill").value;
+  const back = $("qr-back").value;
+  const scale = $("qr-scale").value;
+  const border = $("qr-border").value;
+  const ecc = $("qr-ecc").value;
+  const module = $("qr-module").value;
+  const gradient = $("qr-gradient").value;
+  const fill2 = $("qr-fill2").value;
+  if (fill.toLowerCase() !== _QR_STYLE_DEFAULTS.fill) qs.set("fill", fill);
+  if (back.toLowerCase() !== _QR_STYLE_DEFAULTS.back) qs.set("back", back);
+  if (scale !== _QR_STYLE_DEFAULTS.scale) qs.set("scale", scale);
+  if (border !== _QR_STYLE_DEFAULTS.border) qs.set("border", border);
+  if (ecc !== _QR_STYLE_DEFAULTS.ecc) qs.set("ecc", ecc);
+  if (module !== _QR_STYLE_DEFAULTS.module) qs.set("module", module);
+  if (gradient !== _QR_STYLE_DEFAULTS.gradient) {
+    qs.set("gradient", gradient);
+    qs.set("fill2", fill2); // only meaningful alongside a gradient
+  }
+  return qs;
+}
+
+function _qrStyleFormData(logoFile) {
+  // POST carries every field explicitly (no "omit defaults" — the server
+  // form defaults still apply, but being explicit keeps it predictable).
+  const form = new FormData();
+  form.set("fill", $("qr-fill").value);
+  form.set("back", $("qr-back").value);
+  form.set("fill2", $("qr-fill2").value);
+  form.set("scale", $("qr-scale").value);
+  form.set("border", $("qr-border").value);
+  form.set("ecc", $("qr-ecc").value);
+  form.set("module", $("qr-module").value);
+  form.set("gradient", $("qr-gradient").value);
+  // UI slider is a percentage (10–30); the API wants a 0.10–0.30 ratio.
+  form.set("logo_ratio", String(Number($("qr-logo-ratio").value) / 100));
+  form.set("logo", logoFile);
+  return form;
+}
+
+// Single entry point for (re)rendering the preview + download link.
+async function _renderQrImage(token) {
+  const seq = ++_qrRenderSeq; // invalidates any in-flight older render
+  _hideStyleError();
+  const link = $("qr-download-link");
+  const logoFile = $("qr-logo").files && $("qr-logo").files[0];
+
+  if (!logoFile) {
+    // GET path — also drops any stale blob URL via _setQrImageSrc.
+    const qs = _qrStyleParams();
+    _setQrImageSrc(`/api/qr/${token}/image${qs.toString() ? "?" + qs : ""}`, false);
+    const dl = _qrStyleParams();
+    dl.set("download", "1");
+    link.href = `/api/qr/${token}/image?${dl}`;
+    link.setAttribute("download", `qr-${token}.png`);
+    return;
+  }
+
+  // POST path — logo is binary, so multipart.
+  try {
+    const r = await fetch(`/api/qr/${token}/image`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: _qrStyleFormData(logoFile),
+    });
+    if (seq !== _qrRenderSeq) return; // a newer render won
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({ detail: r.statusText }));
+      _showStyleError(`Logo render failed: ${formatError(body, r.status)}`);
+      return;
+    }
+    const blob = await r.blob();
+    if (seq !== _qrRenderSeq) return;
+    const url = URL.createObjectURL(blob);
+    _setQrImageSrc(url, true);
+    link.href = url;
+    link.setAttribute("download", `qr-${token}.png`);
+  } catch (err) {
+    if (seq === _qrRenderSeq) _showStyleError(`Network error: ${err.message}`);
+  }
+}
+
+function _showStyleError(msg) {
+  const el = $("qr-style-error");
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+function _hideStyleError() {
+  $("qr-style-error").hidden = true;
+}
+
+function _syncQrStyleReadouts() {
+  $("qr-scale-value").textContent = $("qr-scale").value;
+  $("qr-border-value").textContent = $("qr-border").value;
+  $("qr-logo-ratio-value").textContent = `${$("qr-logo-ratio").value}%`;
+  // Gradient-end color only matters when a gradient is selected.
+  $("qr-fill2-row").hidden = $("qr-gradient").value === "none";
+  // Logo size + remove button only when a logo is attached.
+  const hasLogo = Boolean($("qr-logo").files && $("qr-logo").files[0]);
+  $("qr-logo-size-row").hidden = !hasLogo;
+  $("qr-logo-clear").hidden = !hasLogo;
+}
+
+// Reset controls to defaults. Called when opening a different QR so
+// styling (and any attached logo) never leaks from the previous one.
+function _resetQrStyleControls() {
+  $("qr-fill").value = _QR_STYLE_DEFAULTS.fill;
+  $("qr-back").value = _QR_STYLE_DEFAULTS.back;
+  $("qr-fill2").value = _QR_STYLE_DEFAULTS.fill2;
+  $("qr-scale").value = _QR_STYLE_DEFAULTS.scale;
+  $("qr-border").value = _QR_STYLE_DEFAULTS.border;
+  $("qr-ecc").value = _QR_STYLE_DEFAULTS.ecc;
+  $("qr-module").value = _QR_STYLE_DEFAULTS.module;
+  $("qr-gradient").value = _QR_STYLE_DEFAULTS.gradient;
+  $("qr-logo").value = ""; // clear the file selection
+  $("qr-logo-ratio").value = "22";
+  _hideStyleError();
+  _syncQrStyleReadouts();
+}
+
+// Live preview, debounced so dragging a slider or scrubbing a color
+// picker doesn't fire a request per intermediate value.
+const _renderQrImageDebounced = _debounce(() => {
+  if (currentToken) _renderQrImage(currentToken);
+}, 150);
+
+[
+  "qr-fill", "qr-back", "qr-fill2", "qr-scale", "qr-border",
+  "qr-ecc", "qr-module", "qr-gradient", "qr-logo-ratio",
+].forEach((id) => {
+  $(id).addEventListener("input", () => {
+    _syncQrStyleReadouts();
+    _renderQrImageDebounced();
+  });
+});
+
+// Logo selection renders immediately (and reveals size + remove).
+$("qr-logo").addEventListener("change", () => {
+  _syncQrStyleReadouts();
+  if (currentToken) _renderQrImage(currentToken);
+});
+
+// Remove logo -> back to the cacheable GET preview.
+$("qr-logo-clear").addEventListener("click", () => {
+  $("qr-logo").value = "";
+  _syncQrStyleReadouts();
+  if (currentToken) _renderQrImage(currentToken);
+});
+
+$("qr-style-reset").addEventListener("click", () => {
+  _resetQrStyleControls();
+  if (currentToken) _renderQrImage(currentToken);
+});
 
 function _resetAnalyticsRange() {
   $("analytics-from").value = "";
@@ -852,14 +1048,16 @@ function _debounce(fn, ms) {
 function openOwnedQR(item) {
   // Render the result panel against an existing owned QR.
   // Auth for subsequent PATCH/DELETE flows via the session cookie.
-  $("qr-image").src = `/api/qr/${item.token}/image`;
   $("short-url").value = item.short_url;
   $("original-url").value = item.original_url;
   $("token").value = item.token;
   $("current-expires").value = _formatExpires(item.expires_at);
   _applyRedirectStatus(item.redirect_status ?? 302);
   _applyDeletedState(Boolean(item.is_deleted));
-  _setDownloadLink(item.token);
+  // Reset styling to default for the newly-opened QR, then point the
+  // preview + download link at the image endpoint.
+  _resetQrStyleControls();
+  _renderQrImage(item.token);
   currentToken = item.token;
   $("create-form").hidden = true;
   $("result").hidden = false;

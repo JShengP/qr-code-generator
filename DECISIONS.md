@@ -505,3 +505,29 @@ The confirm dialog and the `<details>` hint both now state the propagation windo
 ### Analytics date-range validates `from <= to` at the route
 
 Pydantic `Query(pattern=r"^\d{4}-\d{2}-\d{2}$")` catches garbage at the schema layer. The `from > to` check is a route-level 422 because the pattern is per-field. Otherwise a `?from=2026-12-01&to=2025-01-01` would silently return an empty chart and the user would think it's a "no scans in range" result rather than user error.
+
+### QR styling: query params, not stored columns
+
+The image endpoint takes `fill` / `back` / `scale` / `border` / `ecc` as query params and renders on the fly, rather than persisting a style on the `url_mappings` row. Three reasons:
+
+- **Styling can't change the destination.** The encoded payload is always the short URL; the params only touch the rendered pixels. Keeping them out of the row makes that guarantee structural, not a thing we have to remember to enforce — the redirect path never reads them. It also keeps the endpoint a *pure function of its inputs*, matching the existing "image is a pure function of the short URL" contract that lets soft-deleted rows still render for the Restore preview.
+- **No migration, no per-QR state to keep in sync.** A stored style would need a column (or a JSON blob), a migration, PATCH plumbing, and an answer for "does editing the destination reset the look?". The query-param shape sidesteps all of it, and the same token can be rendered navy-on-cream for a slide deck and black-on-white for a printout without forking the row.
+- **The UI is a thin URL builder.** `app.js` only includes *non-default* params, so an untouched QR still requests the bare `/image` path and gets the same compact 1-bit PNG it always did (the canonical black/white hex is mapped back to Pillow's `"black"`/`"white"` names, which is the only input that triggers its 1-bit fast path). Backward compatibility for existing callers and printed QRs is exact.
+
+Validation is strict and lives at the route: hex is regex-checked and normalized (`#rgb` shorthand expands CSS-style), `scale`/`border` use `Query(ge=, le=)` bounds — which double as a DoS guard, since an unbounded `box_size` would let one request allocate an arbitrarily large bitmap — and `fill == back` is a 422 because zero contrast renders an unscannable solid block (cheap to catch, saves a "why is my QR blank" support loop). The cost of stateless styling is that the look isn't remembered across reloads; for a print-the-PNG workflow that's fine — you download the styled file once and the URL itself is the recipe if you want to reproduce it.
+
+The trade-off if requirements change: if a deployment ever wants a *remembered* per-QR brand style (e.g. every QR for one account is always the same color), that becomes a stored-style feature — but it's strictly additive on top of this (persist defaults, still allow query-param overrides), so nothing here blocks it.
+
+### Styled rendering: module shape + gradient on GET, logo on a POST twin
+
+The second styling batch — rounded/circle/gapped **module shapes**, foreground **gradients**, and a centered **logo** — splits across two endpoints on purpose, and the split falls out of one fact: a logo is *binary*, everything else is a short string.
+
+- **Shape + gradient stay on GET** (`module`, `gradient`, `fill2` query params). They're enum-ish/hex, so they fit a URL, keep the live `<img src>` preview, stay cacheable, and preserve the "untouched QR → bare `/image`" backward-compat path. Internally the flat black/white/square case still takes the original fast `PilImage` path (1-bit output); anything fancier switches to `StyledPilImage` (module drawer + color mask). One `_render_qr_png` helper holds both paths so GET and POST can't diverge.
+- **Logo forces a POST** (`multipart/form-data`, same fields as `Form` parts + a `logo` file). You can't put a PNG in a query string, and base64-in-URL would be huge, uncacheable, and ugly. So the frontend keeps the GET preview for the common case and *only* reaches for POST when a logo is attached; the returned PNG is previewed as a `blob:` object URL (revoked on each change to avoid leaks, with a render-sequence guard so a slow earlier response can't overwrite a newer one).
+
+Two correctness points worth recording:
+
+- **Logo ⇒ force ECC `H`.** A center logo occludes modules; the server overrides `ecc` to `H` whenever a logo is present so the code still scans regardless of what the caller asked for. The UI states this ("adding a logo bumps error-correction to H").
+- **Logo is still stateless.** It's composited into that one response and never written to the row — same guarantee as the rest of styling. The cost (re-upload on each re-render while tuning) is negligible for a local-ish tool with ≤ 2 MB logos, and it keeps the "styling can't touch the destination, nothing to migrate" property intact. Upload safety lives at the boundary: a 2 MB byte cap (413) read *before* decode, plus Pillow's decompression-bomb guard, cap per-request cost; a non-decodable upload is a 422.
+
+Why not composite the logo client-side on a `<canvas>` (no endpoint, logo never leaves the browser)? It's viable, but the library's `StyledPilImage` already places + scales the logo correctly and is trivially unit-testable in-process, whereas canvas compositing is only reachable from a real browser (e2e-only). Given this codebase's Python-test-heavy bias, the testable server path won. The privacy angle is moot for a self-hosted tool, and the render is stateless either way.

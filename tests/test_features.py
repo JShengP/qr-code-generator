@@ -8,7 +8,10 @@ filtered list) so a regression in the wiring surfaces.
 """
 from __future__ import annotations
 
+import io
 from datetime import datetime, timedelta, timezone
+
+from PIL import Image
 
 from app import routes as routes_module
 from app.models import ScanEvent
@@ -403,3 +406,209 @@ def test_delete_populates_deleted_at(client):
     items = client.get("/api/qr/mine?include_deleted=1").json()["items"]
     dead = next(i for i in items if i["token"] == token)
     assert dead["deleted_at"] is not None
+
+
+# ----------------------- QR image styling ---------------------------
+#
+# The /image endpoint takes presentation params (fill/back/scale/border/
+# ecc). They're stateless — pure function of (short_url, params) — so
+# these only assert on the rendered PNG, never on stored state.
+
+
+def _png(client, token, **params):
+    """Fetch the QR image and return (response, PIL.Image | None)."""
+    r = client.get(f"/api/qr/{token}/image", params=params)
+    img = Image.open(io.BytesIO(r.content)) if r.status_code == 200 else None
+    return r, img
+
+
+def test_image_defaults_unchanged(client):
+    # No params -> same valid PNG the endpoint always produced. Locks in
+    # backward compatibility for existing callers / printed QRs.
+    token = _create(client)["token"]
+    r, _ = _png(client, token)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_image_custom_colors_render_into_the_png(client):
+    token = _create(client)["token"]
+    r, img = _png(client, token, fill="1a3b7c", back="ffeecc")
+    assert r.status_code == 200
+    # Custom colors force an RGB image; the default border makes (0,0)
+    # part of the quiet zone, so the corner pixel is the background color.
+    assert img.mode == "RGB"
+    assert img.getpixel((0, 0)) == (0xFF, 0xEE, 0xCC)
+
+
+def test_image_accepts_hash_prefixed_and_shorthand_hex(client):
+    token = _create(client)["token"]
+    # '#' is percent-encoded by the client; full 6-digit hex works.
+    assert _png(client, token, fill="#112233")[0].status_code == 200
+    # Shorthand #abc expands to #aabbcc (CSS-style). Use a colored
+    # shorthand so the result stays RGB and the expansion is observable
+    # in the corner (quiet-zone) pixel.
+    r, img = _png(client, token, back="#fec", fill="#13a")
+    assert r.status_code == 200
+    assert img.mode == "RGB"
+    assert img.getpixel((0, 0)) == (0xFF, 0xEE, 0xCC)
+
+
+def test_image_scale_multiplies_pixel_dimensions(client):
+    token = _create(client)["token"]
+    _, small = _png(client, token, scale=4)
+    _, large = _png(client, token, scale=20)
+    # Same data + default border => identical module count, so pixel
+    # size scales exactly with box_size (20 / 4 == 5x).
+    assert large.size[0] == small.size[0] * 5
+
+
+def test_image_border_widens_the_quiet_zone(client):
+    token = _create(client)["token"]
+    _, tight = _png(client, token, border=0)
+    _, wide = _png(client, token, border=10)
+    assert wide.size[0] > tight.size[0]
+
+
+def test_image_ecc_levels_accepted_case_insensitively(client):
+    token = _create(client)["token"]
+    for level in ("L", "M", "Q", "H", "h"):
+        assert _png(client, token, ecc=level)[0].status_code == 200
+
+
+def test_image_invalid_color_is_422(client):
+    token = _create(client)["token"]
+    assert _png(client, token, fill="nothex")[0].status_code == 422
+    assert _png(client, token, back="12345")[0].status_code == 422  # 5 digits
+
+
+def test_image_identical_fill_and_back_is_422(client):
+    token = _create(client)["token"]
+    r, _ = _png(client, token, fill="abcdef", back="ABCDEF")  # case-folded equal
+    assert r.status_code == 422
+
+
+def test_image_out_of_range_scale_and_border_are_422(client):
+    token = _create(client)["token"]
+    assert _png(client, token, scale=0)[0].status_code == 422
+    assert _png(client, token, scale=999)[0].status_code == 422
+    assert _png(client, token, border=-1)[0].status_code == 422
+    assert _png(client, token, border=21)[0].status_code == 422
+
+
+def test_image_invalid_ecc_is_422(client):
+    token = _create(client)["token"]
+    assert _png(client, token, ecc="Z")[0].status_code == 422
+
+
+def test_image_styling_works_on_soft_deleted_rows(client):
+    # The image endpoint renders deleted rows too (Restore preview);
+    # styling must keep working there.
+    token = _create(client)["token"]
+    client.delete(f"/api/qr/{token}")
+    r, img = _png(client, token, fill="ff0000", back="ffffff")
+    assert r.status_code == 200
+    assert img.getpixel((0, 0)) == (255, 255, 255)
+
+
+# --------------- module shape + gradient (GET styled path) -----------
+
+
+def test_image_module_shapes_render(client):
+    token = _create(client)["token"]
+    for shape in ("square", "rounded", "circle", "gapped"):
+        r, img = _png(client, token, module=shape)
+        assert r.status_code == 200, shape
+        assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_image_unknown_module_is_422(client):
+    token = _create(client)["token"]
+    assert _png(client, token, module="hexagon")[0].status_code == 422
+
+
+def test_image_gradients_render_rgb(client):
+    token = _create(client)["token"]
+    for grad in ("radial", "square", "horizontal", "vertical"):
+        r, img = _png(client, token, gradient=grad, fill="1a3b7c", fill2="5b9eff")
+        assert r.status_code == 200, grad
+        # Styled (gradient) renders force a full-color image, not 1-bit.
+        assert img.mode in ("RGB", "RGBA"), grad
+
+
+def test_image_unknown_gradient_is_422(client):
+    token = _create(client)["token"]
+    assert _png(client, token, gradient="diagonal")[0].status_code == 422
+
+
+def test_image_invalid_fill2_is_422(client):
+    token = _create(client)["token"]
+    assert _png(client, token, gradient="radial", fill2="zzz")[0].status_code == 422
+
+
+def test_gradient_allows_equal_fill_and_back(client):
+    # The fill==back guard is solid-only: a gradient gets its contrast
+    # from fill2, so fill==back is legitimate there.
+    token = _create(client)["token"]
+    r, _ = _png(client, token, gradient="radial", fill="ffffff", back="ffffff", fill2="1a3b7c")
+    assert r.status_code == 200
+
+
+# --------------- center logo (POST multipart path) -------------------
+
+
+def _logo_png(size=(64, 64), color=(255, 0, 0)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_post_image_with_logo_renders_png(client):
+    token = _create(client)["token"]
+    r = client.post(
+        f"/api/qr/{token}/image",
+        data={"module": "rounded", "gradient": "horizontal", "fill": "1a3b7c", "fill2": "5b9eff"},
+        files={"logo": ("logo.png", _logo_png(), "image/png")},
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/png"
+    img = Image.open(io.BytesIO(r.content))
+    assert img.mode in ("RGB", "RGBA")
+    # The logo sits at the center; sample a center pixel and confirm it's
+    # the logo's red, not a QR module — proves compositing happened.
+    w, h = img.size
+    assert img.convert("RGB").getpixel((w // 2, h // 2)) == (255, 0, 0)
+
+
+def test_post_image_rejects_non_image_logo(client):
+    token = _create(client)["token"]
+    r = client.post(
+        f"/api/qr/{token}/image",
+        files={"logo": ("evil.png", b"this is definitely not an image", "image/png")},
+    )
+    assert r.status_code == 422
+
+
+def test_post_image_rejects_oversized_logo(client):
+    token = _create(client)["token"]
+    too_big = b"\x00" * (2 * 1024 * 1024 + 16)  # > 2 MB cap, fails before decode
+    r = client.post(
+        f"/api/qr/{token}/image",
+        files={"logo": ("big.png", too_big, "image/png")},
+    )
+    assert r.status_code == 413
+
+
+def test_post_image_validates_scale_and_module(client):
+    token = _create(client)["token"]
+    assert client.post(
+        f"/api/qr/{token}/image",
+        data={"scale": "999"},
+        files={"logo": ("logo.png", _logo_png(), "image/png")},
+    ).status_code == 422
+    assert client.post(
+        f"/api/qr/{token}/image",
+        data={"module": "triangle"},
+        files={"logo": ("logo.png", _logo_png(), "image/png")},
+    ).status_code == 422

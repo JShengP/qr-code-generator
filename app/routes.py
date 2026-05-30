@@ -1,14 +1,40 @@
 import hashlib
 import hmac
 import io
+import re
 import threading
 import time
 from datetime import datetime, timezone
 
 import qrcode
 from cachetools import TTLCache
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import RedirectResponse, StreamingResponse
+from PIL import Image, UnidentifiedImageError
+from qrcode.image.styledpil import StyledPilImage
+from qrcode.image.styles.colormasks import (
+    HorizontalGradiantColorMask,
+    RadialGradiantColorMask,
+    SolidFillColorMask,
+    SquareGradiantColorMask,
+    VerticalGradiantColorMask,
+)
+from qrcode.image.styles.moduledrawers.pil import (
+    CircleModuleDrawer,
+    GappedSquareModuleDrawer,
+    RoundedModuleDrawer,
+    SquareModuleDrawer,
+)
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -628,6 +654,250 @@ def restore_qr(
     return mapping
 
 
+# --- QR image styling ----------------------------------------------------
+#
+# The image endpoint accepts a handful of presentation knobs as query
+# params. They're deliberately stateless — styling is a pure function of
+# (short_url, params), never persisted on the mapping — so a restyle
+# can't change where the QR points, no DB migration is needed, and the
+# same token can be rendered in different palettes for different
+# contexts (dark slide deck vs. printed flyer) without forking the row.
+# See DECISIONS.md "QR styling: query params, not stored columns".
+
+# Error-correction levels. Higher levels embed more redundancy so the
+# code still scans when partly damaged/obscured, at the cost of a denser
+# matrix: L ~7%, M ~15%, Q ~25%, H ~30%. 'M' is the qrcode-library
+# default and the right balance for a clean screen/print scan; bump to
+# 'H' if you plan to overlay a logo or expect physical wear.
+_ECC_LEVELS = {
+    "L": qrcode.constants.ERROR_CORRECT_L,
+    "M": qrcode.constants.ERROR_CORRECT_M,
+    "Q": qrcode.constants.ERROR_CORRECT_Q,
+    "H": qrcode.constants.ERROR_CORRECT_H,
+}
+
+# Accept #rgb / #rrggbb / rgb / rrggbb (case-insensitive). The leading
+# '#' is optional because it's the URL fragment delimiter — callers
+# passing it in a query string have to percent-encode it as %23, so we
+# also accept the bare form.
+_HEX_COLOR_RE = re.compile(r"^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+# Pillow's default QR image factory only emits a compact 1-bit PNG when
+# the colors are exactly the strings "black"/"white"; any other value
+# (including the equivalent hex) forces a larger RGB image. Mapping the
+# canonical black/white hex back to those names keeps the default,
+# uncustomized request producing the exact same small PNG it always did.
+_PIL_NAMED_COLOR = {"#000000": "black", "#ffffff": "white"}
+
+
+def _normalize_hex_color(value: str, *, field: str) -> str:
+    """Validate a hex color string and return it normalized as '#rrggbb'.
+
+    Raises HTTPException(422) on malformed input so a hand-crafted query
+    string gets a clear, actionable error instead of a 500 bubbling up
+    out of Pillow's color parser.
+    """
+    v = value.strip()
+    if not _HEX_COLOR_RE.match(v):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"`{field}` must be a hex color like `1a3b7c` or `#1a3b7c` "
+                f"(3 or 6 hex digits, '#' optional). Got: {value!r}"
+            ),
+        )
+    v = v.lstrip("#").lower()
+    if len(v) == 3:
+        # Expand shorthand the way CSS does: #abc -> #aabbcc.
+        v = "".join(ch * 2 for ch in v)
+    return f"#{v}"
+
+
+# --- Styled-render building blocks (module shape, gradient, logo) --------
+#
+# Beyond flat color, the endpoint can render rounded/circular modules, a
+# gradient fill, and a centered logo via qrcode's StyledPilImage factory
+# (module drawers + color masks + an embedded image). Flat + square +
+# no-logo requests still take the original fast path in `_render_qr_png`,
+# so the common case keeps its compact (and for black/white, 1-bit) output.
+
+# Module (dot) shapes — factories, not instances: qrcode mutates drawer
+# state during a render, so each render must get a fresh one.
+_MODULE_DRAWERS = {
+    "square": SquareModuleDrawer,
+    "rounded": lambda: RoundedModuleDrawer(radius_ratio=1),
+    "circle": CircleModuleDrawer,
+    "gapped": lambda: GappedSquareModuleDrawer(size_ratio=0.85),
+}
+
+# Gradient styles. `none` is a solid `fill`; the rest sweep `fill`->`fill2`
+# (center->edge for radial/square, left->right horizontal, top->bottom
+# vertical).
+_GRADIENTS = {"none", "radial", "square", "horizontal", "vertical"}
+
+# Logo upload bounds. A 2 MB cap on the raw bytes plus Pillow's own
+# decompression-bomb guard keep one request from allocating an unbounded
+# bitmap. The ratio is the fraction of the QR width the logo spans; much
+# above ~0.3 starts eating into scannability even at ECC H.
+_LOGO_MAX_BYTES = 2 * 1024 * 1024
+_LOGO_RATIO_MIN, _LOGO_RATIO_MAX = 0.1, 0.3
+
+
+def _hex_to_rgb(normalized: str) -> tuple[int, int, int]:
+    """'#rrggbb' (already normalized by `_normalize_hex_color`) -> (r, g, b).
+
+    Color masks take RGB tuples, not the hex strings the flat-PIL factory
+    accepts — this is the bridge for the styled path.
+    """
+    h = normalized.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _make_color_mask(gradient: str, back_rgb, fill_rgb, fill2_rgb):
+    """Build the qrcode color mask for the requested gradient style."""
+    if gradient == "radial":
+        return RadialGradiantColorMask(
+            back_color=back_rgb, center_color=fill_rgb, edge_color=fill2_rgb
+        )
+    if gradient == "square":
+        return SquareGradiantColorMask(
+            back_color=back_rgb, center_color=fill_rgb, edge_color=fill2_rgb
+        )
+    if gradient == "horizontal":
+        return HorizontalGradiantColorMask(
+            back_color=back_rgb, left_color=fill_rgb, right_color=fill2_rgb
+        )
+    if gradient == "vertical":
+        return VerticalGradiantColorMask(
+            back_color=back_rgb, top_color=fill_rgb, bottom_color=fill2_rgb
+        )
+    return SolidFillColorMask(back_color=back_rgb, front_color=fill_rgb)
+
+
+def _resolve_style(
+    *, fill: str, back: str, fill2: str, module: str, gradient: str, ecc: str
+) -> tuple[str, str, str, str]:
+    """Validate + normalize every style field shared by GET and POST.
+
+    Returns `(fill_hex, back_hex, fill2_hex, ecc_key)`. Raises 422 on any
+    malformed/unknown value so both handlers reject identically.
+    """
+    fill_hex = _normalize_hex_color(fill, field="fill")
+    back_hex = _normalize_hex_color(back, field="back")
+    fill2_hex = _normalize_hex_color(fill2, field="fill2")
+
+    if module not in _MODULE_DRAWERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"`module` must be one of {sorted(_MODULE_DRAWERS)}. Got: {module!r}",
+        )
+    if gradient not in _GRADIENTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"`gradient` must be one of {sorted(_GRADIENTS)}. Got: {gradient!r}",
+        )
+    ecc_key = ecc.strip().upper()
+    if ecc_key not in _ECC_LEVELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"`ecc` must be one of L, M, Q, H. Got: {ecc!r}",
+        )
+
+    # Zero-contrast guard only for solid fills — a gradient gets its
+    # contrast from `fill2`, so fill==back there is fine.
+    if gradient == "none" and fill_hex == back_hex:
+        raise HTTPException(
+            status_code=422,
+            detail="`fill` and `back` are the same color — the QR would be a "
+            "solid block and unscannable. Pick a dark fill on a light back.",
+        )
+    return fill_hex, back_hex, fill2_hex, ecc_key
+
+
+def _read_logo(upload: UploadFile) -> Image.Image:
+    """Read + validate an uploaded logo into an RGBA PIL image.
+
+    Caps the raw upload at `_LOGO_MAX_BYTES` (413 if exceeded) and rejects
+    anything Pillow can't decode as an image (422). RGBA so a transparent
+    logo composites cleanly over the QR.
+    """
+    raw = upload.file.read(_LOGO_MAX_BYTES + 1)
+    if len(raw) > _LOGO_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Logo too large (max {_LOGO_MAX_BYTES // (1024 * 1024)} MB).",
+        )
+    if not raw:
+        raise HTTPException(status_code=422, detail="Logo file is empty.")
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()  # force decode now so a bad/oversized image fails here
+    except Exception:
+        # UnidentifiedImageError, truncated files, decompression bombs —
+        # all collapse to "not a usable image".
+        raise HTTPException(
+            status_code=422,
+            detail="Logo must be a valid image file (PNG, JPEG, etc.).",
+        )
+    return img.convert("RGBA")
+
+
+def _render_qr_png(
+    short_url: str,
+    *,
+    fill_hex: str,
+    back_hex: str,
+    scale: int,
+    border: int,
+    ecc_key: str,
+    module: str = "square",
+    gradient: str = "none",
+    fill2_hex: str = "#5b9eff",
+    logo: Image.Image | None = None,
+    logo_ratio: float = 0.22,
+) -> bytes:
+    """Render the QR for `short_url` to PNG bytes with the given styling.
+
+    Flat + square + no-logo takes the original PilImage fast path (and its
+    1-bit optimization for pure black/white); anything fancier goes through
+    StyledPilImage. Shared by the GET (no logo) and POST (logo) handlers so
+    the two render paths can't drift apart.
+    """
+    qr = qrcode.QRCode(
+        version=None,  # auto-size the matrix to fit the data
+        error_correction=_ECC_LEVELS[ecc_key],
+        box_size=scale,
+        border=border,
+    )
+    qr.add_data(short_url)
+    qr.make(fit=True)
+
+    if module == "square" and gradient == "none" and logo is None:
+        img = qr.make_image(
+            fill_color=_PIL_NAMED_COLOR.get(fill_hex, fill_hex),
+            back_color=_PIL_NAMED_COLOR.get(back_hex, back_hex),
+        )
+    else:
+        kwargs = dict(
+            image_factory=StyledPilImage,
+            module_drawer=_MODULE_DRAWERS[module](),
+            color_mask=_make_color_mask(
+                gradient,
+                _hex_to_rgb(back_hex),
+                _hex_to_rgb(fill_hex),
+                _hex_to_rgb(fill2_hex),
+            ),
+        )
+        if logo is not None:
+            kwargs["embeded_image"] = logo
+            kwargs["embeded_image_ratio"] = logo_ratio
+        img = qr.make_image(**kwargs)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @router.get("/api/qr/{token}/image")
 def get_qr_image(
     token: str,
@@ -638,23 +908,138 @@ def get_qr_image(
         description="If true, set Content-Disposition: attachment so the "
         "browser saves the file as `qr-<token>.png` instead of rendering inline.",
     ),
+    fill: str = Query(
+        default="000000",
+        description="Hex color of the dark modules (e.g. `1a3b7c`). The '#' "
+        "is optional; if you include it, percent-encode it as %23.",
+    ),
+    back: str = Query(
+        default="ffffff",
+        description="Hex color of the background / quiet zone.",
+    ),
+    scale: int = Query(
+        default=10,
+        ge=1,
+        le=40,
+        description="Pixels per QR module. Higher = sharper, larger PNG "
+        "(affects the exported file resolution, not the on-screen preview).",
+    ),
+    border: int = Query(
+        default=4,
+        ge=0,
+        le=20,
+        description="Quiet-zone width in modules. The QR spec recommends "
+        ">= 4 for reliable scanning; lower it only if you frame the code yourself.",
+    ),
+    ecc: str = Query(
+        default="M",
+        description="Error-correction level: L (~7%), M (~15%), Q (~25%), H (~30%).",
+    ),
+    module: str = Query(
+        default="square",
+        description="Module (dot) shape: square, rounded, circle, gapped.",
+    ),
+    gradient: str = Query(
+        default="none",
+        description="Foreground gradient: none, radial, square, horizontal, "
+        "vertical. When set, the fill sweeps `fill` -> `fill2`.",
+    ),
+    fill2: str = Query(
+        default="5b9eff",
+        description="Gradient end color (hex). Only used when `gradient` != none.",
+    ),
 ):
-    # Image is a pure function of the short URL — render it even for
-    # soft-deleted rows so the Restore preview in the UI can show
-    # what's about to be brought back.
+    # Image is a pure function of the short URL (+ style params) — render
+    # it even for soft-deleted rows so the Restore preview in the UI can
+    # show what's about to be brought back. Logos can't ride a GET query
+    # string (they're binary), so the logo path lives on the POST twin below.
     _get_mapping_any_state_or_404(token, db)
     short_url = f"{_base_url(request)}/r/{token}"
 
-    img = qrcode.make(short_url)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
+    fill_hex, back_hex, fill2_hex, ecc_key = _resolve_style(
+        fill=fill, back=back, fill2=fill2, module=module, gradient=gradient, ecc=ecc
+    )
+    png = _render_qr_png(
+        short_url,
+        fill_hex=fill_hex,
+        back_hex=back_hex,
+        scale=scale,
+        border=border,
+        ecc_key=ecc_key,
+        module=module,
+        gradient=gradient,
+        fill2_hex=fill2_hex,
+    )
     headers = (
         {"Content-Disposition": f'attachment; filename="qr-{token}.png"'}
         if download
         else None
     )
-    return StreamingResponse(buf, media_type="image/png", headers=headers)
+    return StreamingResponse(io.BytesIO(png), media_type="image/png", headers=headers)
+
+
+@router.post("/api/qr/{token}/image")
+def post_qr_image(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    fill: str = Form(default="000000"),
+    back: str = Form(default="ffffff"),
+    fill2: str = Form(default="5b9eff"),
+    scale: int = Form(default=10),
+    border: int = Form(default=4),
+    ecc: str = Form(default="M"),
+    module: str = Form(default="square"),
+    gradient: str = Form(default="none"),
+    logo_ratio: float = Form(default=0.22),
+    logo: UploadFile | None = File(default=None),
+):
+    """Render the QR with an optional centered logo (multipart upload).
+
+    The GET twin handles every style EXCEPT the logo, which is binary and
+    can't ride a query string. The frontend only reaches for this endpoint
+    when a logo is attached; everything else stays on the cacheable GET.
+
+    Styling is still stateless: the logo is composited into THIS response
+    and never stored on the mapping. A center logo occludes modules, so we
+    force ECC `H` whenever one is present, regardless of the `ecc` field.
+    """
+    _get_mapping_any_state_or_404(token, db)
+    short_url = f"{_base_url(request)}/r/{token}"
+
+    # Form() (unlike Query()) doesn't enforce numeric bounds — do it here.
+    if not 1 <= scale <= 40:
+        raise HTTPException(status_code=422, detail="`scale` must be 1–40.")
+    if not 0 <= border <= 20:
+        raise HTTPException(status_code=422, detail="`border` must be 0–20.")
+    logo_ratio = min(max(logo_ratio, _LOGO_RATIO_MIN), _LOGO_RATIO_MAX)
+
+    fill_hex, back_hex, fill2_hex, ecc_key = _resolve_style(
+        fill=fill, back=back, fill2=fill2, module=module, gradient=gradient, ecc=ecc
+    )
+
+    # `logo` arrives as None when the field is absent, or as an UploadFile
+    # with an empty filename when the form sent an empty file input — treat
+    # both as "no logo".
+    logo_img = None
+    if logo is not None and logo.filename:
+        logo_img = _read_logo(logo)
+        ecc_key = "H"
+
+    png = _render_qr_png(
+        short_url,
+        fill_hex=fill_hex,
+        back_hex=back_hex,
+        scale=scale,
+        border=border,
+        ecc_key=ecc_key,
+        module=module,
+        gradient=gradient,
+        fill2_hex=fill2_hex,
+        logo=logo_img,
+        logo_ratio=logo_ratio,
+    )
+    return StreamingResponse(io.BytesIO(png), media_type="image/png")
 
 
 @router.get("/api/qr/{token}/analytics")

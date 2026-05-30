@@ -275,6 +275,91 @@
           ⬇ Download PNG
         </a>
       </p>
+
+      <!-- Appearance customizer. Color/shape/gradient map to query params
+           on GET /api/qr/{token}/image (live preview via <img src>); a
+           logo, being binary, switches rendering to POST (the same
+           endpoint) and previews the returned PNG as a blob. Either way
+           styling is purely presentational — the encoded short URL (and
+           therefore the destination) is never touched. -->
+      <details class="qr-style" open>
+        <summary>🎨 Customize appearance</summary>
+        <div class="qr-style-grid">
+          <label class="qr-style-row">
+            <span>Foreground</span>
+            <input type="color" id="qr-fill" value="#000000" />
+          </label>
+          <label class="qr-style-row">
+            <span>Background</span>
+            <input type="color" id="qr-back" value="#ffffff" />
+          </label>
+          <label class="qr-style-row">
+            <span>Gradient</span>
+            <select id="qr-gradient">
+              <option value="none" selected>None (solid)</option>
+              <option value="radial">Radial (center → edge)</option>
+              <option value="square">Square (center → edge)</option>
+              <option value="horizontal">Horizontal (left → right)</option>
+              <option value="vertical">Vertical (top → bottom)</option>
+            </select>
+          </label>
+          <label class="qr-style-row" id="qr-fill2-row" hidden>
+            <span>Gradient end</span>
+            <input type="color" id="qr-fill2" value="#5b9eff" />
+          </label>
+          <label class="qr-style-row">
+            <span>Module shape</span>
+            <select id="qr-module">
+              <option value="square" selected>Square</option>
+              <option value="rounded">Rounded</option>
+              <option value="circle">Circle (dots)</option>
+              <option value="gapped">Gapped</option>
+            </select>
+          </label>
+          <label class="qr-style-row">
+            <span>Resolution <span class="hint">(export quality)</span></span>
+            <input type="range" id="qr-scale" min="4" max="40" step="1" value="10" />
+            <output id="qr-scale-value" class="qr-style-readout">10</output>
+          </label>
+          <label class="qr-style-row">
+            <span>Quiet zone <span class="hint">(border)</span></span>
+            <input type="range" id="qr-border" min="0" max="10" step="1" value="4" />
+            <output id="qr-border-value" class="qr-style-readout">4</output>
+          </label>
+          <label class="qr-style-row">
+            <span>Error correction</span>
+            <select id="qr-ecc">
+              <option value="L">L — recovers ~7%</option>
+              <option value="M" selected>M — ~15% (default)</option>
+              <option value="Q">Q — ~25%</option>
+              <option value="H">H — ~30% (densest)</option>
+            </select>
+          </label>
+          <div class="qr-style-row">
+            <span>Center logo <span class="hint">(PNG/JPG)</span></span>
+            <input type="file" id="qr-logo" accept="image/png,image/jpeg,image/webp,image/gif" class="qr-logo-input" />
+            <button type="button" id="qr-logo-clear" class="qr-logo-clear" title="Remove logo" hidden>✕</button>
+          </div>
+          <label class="qr-style-row" id="qr-logo-size-row" hidden>
+            <span>Logo size</span>
+            <input type="range" id="qr-logo-ratio" min="10" max="30" step="1" value="22" />
+            <output id="qr-logo-ratio-value" class="qr-style-readout">22%</output>
+          </label>
+        </div>
+        <p class="hint qr-style-note">
+          Styling never changes where the QR points. A gradient sweeps the
+          foreground from its color to the gradient-end color. Adding a
+          center logo automatically bumps error-correction to <strong>H</strong>
+          so the code still scans; keep the logo ≤ 30% and test a scan
+          before printing. Higher resolution makes a larger, sharper PNG —
+          it doesn't resize the preview above.
+        </p>
+        <button type="button" id="qr-style-reset" class="tertiary qr-style-reset">
+          Reset to default
+        </button>
+        <div id="qr-style-error" class="alert alert-error qr-style-error" hidden></div>
+      </details>
+
       <div class="result-fields">
         <div class="field">
           <label>Short URL</label>
